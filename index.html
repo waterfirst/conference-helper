@@ -13,6 +13,7 @@
     <!-- Firebase SDKs -->
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
     <style>
         * {
             margin: 0;
@@ -543,6 +544,8 @@
             </p>
             <div id="user-info" style="display: none; margin-top: 10px;">
                 <span id="user-email" style="color: #00ff88; font-size: 0.8em; margin-right: 10px;"></span>
+                <span id="statusBadge"
+                    style="color: #ffaa00; font-size: 0.8em; margin-right: 10px; font-weight: bold;"></span>
                 <button onclick="logout()"
                     style="background:none; border:1px solid #555; color:#aaa; padding:2px 8px; border-radius:4px; font-size:0.75em; cursor:pointer;">Logout</button>
             </div>
@@ -585,6 +588,13 @@
                         <option value="ru">🇷🇺 Русский</option>
                         <option value="it">🇮🇹 Italiano</option>
                         <option value="pt">🇵🇹 Português</option>
+                    </select>
+                </div>
+                <div class="lang-row">
+                    <span class="lang-label">Subtitle View</span>
+                    <select id="subtitleMode" style="flex:1;">
+                        <option value="original">Show Original (인식 언어)</option>
+                        <option value="translated" selected>Show Translated (번역 언어)</option>
                     </select>
                 </div>
                 <div class="camera-toggle">
@@ -678,9 +688,10 @@
         // --- LICENSE & PAYMENT SETUP ---
         let trialChars = 0;
         let trialStartTime = null;
-        const MAX_TRIAL_CHARS = 1000;
-        const MAX_TRIAL_MS = 5 * 60 * 1000; // 5 minutes
-        let isPremium = false; // Updated by backend checkSubscription
+        const MAX_TRIAL_CHARS = 20000; // 2만 자로 증량
+        const MAX_TRIAL_MS = 60 * 60 * 1000; // 60분 (1시간)
+        let isPremium = false;
+        let isAdmin = false; // 관리자 여부 추가
 
         // Toss Payments Client Key (Test)
         const clientKey = 'test_ck_D5bZzMqlcwBa29KGRJg8W480u0J9';
@@ -695,7 +706,7 @@
         function getDateTimeString() { return new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-'); }
 
         // --- CONFIGURATION ---
-        const BACKEND_URL = 'https://translator-backend-258115702573.asia-northeast3.run.app'; // Cloud Run Service URL
+        const BACKEND_URL = 'https://translator-backend-258115702573.asia-northeast3.run.app';
         const firebaseConfig = {
             apiKey: "AIzaSyBkR6Tu6dDyAArQf2mrs7Tb7h97pfjjCFs",
             authDomain: "internation-conference-helper.firebaseapp.com",
@@ -705,21 +716,72 @@
             appId: "1:258115702573:web:96731227a9dae2445e4da4",
             measurementId: "G-6E1XKPCN6T"
         };
-        // ---------------------
 
-        // Initialize Firebase
+        // 1. Firebase 초기화
         if (!firebase.apps.length) {
             firebase.initializeApp(firebaseConfig);
         }
+        // [중요] 데이터베이스 ID 'user'를 명시적으로 호출합니다.
+        const db = firebase.app().firestore('user');
+        const auth = firebase.auth();
         let currentUser = null;
 
-        firebase.auth().onAuthStateChanged((user) => {
+        // 2. 권한 체크 로직 (구조: users 컬렉션 -> 이메일 문서)
+        async function checkAccess(user) {
+            // 관리자 이메일 체크
+            if (user.email === 'tearim07@gmail.com') {
+                isAdmin = true;
+                const badge = document.getElementById('statusBadge');
+                badge.textContent = "시스템 관리자 (무제한)";
+                badge.style.color = "#00d9ff";
+                return;
+            }
+
+            const userRef = db.collection('users').doc(user.email);
+            const doc = await userRef.get();
+            const badge = document.getElementById('statusBadge');
+            const now = new Date();
+
+            if (!doc.exists) {
+                // 신규 유저는 자동으로 'users' 컬렉션에 이메일 문서가 생성되며 5일 체험 시작
+                await userRef.set({
+                    trialStartDate: firebase.firestore.FieldValue.serverTimestamp(),
+                    isPaid: false,
+                    email: user.email
+                });
+                badge.textContent = "5일 무료 체험 시작";
+                isPremium = false;
+            } else {
+                const data = doc.data();
+                if (data.isPaid === true) {
+                    badge.textContent = "프리미엄 멤버 (무제한)";
+                    badge.style.color = "#00ff88";
+                    isPremium = true;
+                } else {
+                    const startDate = data.trialStartDate.toDate();
+                    const diffDays = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
+                    if (diffDays > 5) {
+                        badge.textContent = "체험 만료";
+                        badge.style.color = "#ff4444";
+                        isPremium = false;
+                        alert("체험 기간이 만료되었습니다. 관리자에게 문의하세요.");
+                        document.getElementById('startBtn').disabled = true;
+                    } else {
+                        badge.textContent = `${6 - diffDays}일 남음`;
+                        isPremium = false;
+                    }
+                }
+            }
+        }
+
+        auth.onAuthStateChanged(async (user) => {
             currentUser = user;
             if (user) {
                 document.getElementById('user-email').textContent = user.email;
                 document.getElementById('user-info').style.display = 'block';
                 document.getElementById('loginModal').classList.remove('show');
                 showToast('✅ Logged in: ' + user.email);
+                await checkAccess(user);
             } else {
                 document.getElementById('user-info').style.display = 'none';
                 document.getElementById('loginModal').classList.add('show');
@@ -848,9 +910,9 @@
                 loginWithGoogle();
                 return;
             }
-            const uid = currentUser ? currentUser.uid : 'anon';
-            // Order ID format: ORDER-UID-TIMESTAMP
-            const orderId = `ORDER-${uid}-${Date.now()}`;
+            const emailEncoded = currentUser ? btoa(currentUser.email).replace(/=/g, '') : 'anon';
+            // Order ID format: ORDER-EMAIL-TIMESTAMP
+            const orderId = `ORDER-${emailEncoded}-${Date.now()}`;
 
             tossPayments.requestPayment('카드', {
                 amount: amount,
@@ -862,47 +924,120 @@
             });
         }
 
+        let silenceTimer = null;
+        let lastInterim = '';
+
         function initSpeechRecognition() {
             if (!SpeechRecognition) return null;
             const recognition = new SpeechRecognition();
-            recognition.continuous = true; recognition.interimResults = true;
+            recognition.continuous = true;
+            recognition.interimResults = true;
+            recognition.maxAlternatives = 1; // 단일 정확도 집중
             recognition.lang = document.getElementById('recognitionLang').value;
-            recognition.onstart = () => { isRecognizing = true; document.getElementById('statusDot').classList.add('active'); document.getElementById('statusText').textContent = 'Listening...'; document.getElementById('startBtn').style.display = 'none'; document.getElementById('stopBtn').style.display = 'flex'; };
-            recognition.onend = () => { if (isRecognizing) { try { recognition.start(); } catch (e) { } } else { document.getElementById('statusDot').classList.remove('active'); document.getElementById('statusText').textContent = 'Ready'; document.getElementById('startBtn').style.display = 'flex'; document.getElementById('stopBtn').style.display = 'none'; } };
-            recognition.onerror = (e) => { if (e.error === 'not-allowed') showToast('Microphone permission required'); };
+
+            recognition.onstart = () => {
+                isRecognizing = true;
+                document.getElementById('statusDot').classList.add('active');
+                document.getElementById('statusText').textContent = 'Listening...';
+                document.getElementById('startBtn').style.display = 'none';
+                document.getElementById('stopBtn').style.display = 'flex';
+            };
+
+            recognition.onend = () => {
+                if (isRecognizing) {
+                    console.log("Recognition ended unexpectedly. Restarting...");
+                    try { recognition.start(); } catch (e) { }
+                } else {
+                    document.getElementById('statusDot').classList.remove('active');
+                    document.getElementById('statusText').textContent = 'Ready';
+                    document.getElementById('startBtn').style.display = 'flex';
+                    document.getElementById('stopBtn').style.display = 'none';
+                }
+            };
+
+            recognition.onerror = (e) => {
+                console.error("Speech Recognition Error:", e.error);
+                if (e.error === 'not-allowed') showToast('Microphone permission required');
+                if (e.error === 'network') showToast('Network connection issue');
+            };
+
             recognition.onresult = async (e) => {
                 const subtitleEl = document.getElementById('subtitleText');
+                const subtitleMode = document.getElementById('subtitleMode').value;
                 let interim = '', final = '';
-                for (let i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) final += e.results[i][0].transcript; else interim += e.results[i][0].transcript; }
 
-                // --- TRIAL LIMIT CHECK ---
-                if (!isPremium && final.length > 0) {
+                for (let i = e.resultIndex; i < e.results.length; i++) {
+                    if (e.results[i].isFinal) final += e.results[i][0].transcript;
+                    else interim += e.results[i][0].transcript;
+                }
+
+                // 침묵 감지용 타이머 초기화 (감도 핵심)
+                if (silenceTimer) clearTimeout(silenceTimer);
+
+                if (final) {
+                    processConfirmedText(final);
+                    lastInterim = '';
+                } else if (interim) {
+                    lastInterim = interim;
+                    subtitleEl.textContent = interim;
+                    subtitleEl.className = 'subtitle-text interim';
+
+                    // [핵심] 1.5초간 변화가 없으면 강제로 문장 종료로 간주하고 번역 (감도 향상)
+                    silenceTimer = setTimeout(() => {
+                        if (lastInterim) {
+                            console.log("Silence detected. Auto-finalizing interim results.");
+                            processConfirmedText(lastInterim);
+                            lastInterim = '';
+                        }
+                    }, 1500);
+                }
+            };
+
+            async function processConfirmedText(text) {
+                const cleanText = text.trim();
+                if (!cleanText || cleanText.length < 2) return;
+
+                const subtitleEl = document.getElementById('subtitleText');
+                const subtitleMode = document.getElementById('subtitleMode').value;
+                const targetLang = document.getElementById('translateLang').value;
+
+                // --- TRIAL LIMIT CHECK --- 
+                // 관리자(isAdmin) 또는 결제유저(isPremium)는 체크 스킵
+                if (!isPremium && !isAdmin) {
                     if (!trialStartTime) trialStartTime = Date.now();
-                    // 1. Time Limit
-                    if (Date.now() - trialStartTime > MAX_TRIAL_MS) {
+
+                    // 1시간 시간 체크
+                    const elapsed = Date.now() - trialStartTime;
+                    if (elapsed > MAX_TRIAL_MS) {
                         stopAll();
-                        alert("⏳ 무료 체험 시간(5분)이 종료되었습니다.\n\n계속 사용하시려면 라이선스를 구매해주세요.");
-                        requestPayment(100000, '개인 라이선스');
+                        alert("⏳ 1시간 무료 체험 시간이 종료되었습니다.\n계속하시려면 라이선스를 구매해주세요.");
                         return;
                     }
-                    // 2. Char Limit
-                    trialChars += final.length;
+
+                    // 글자 수 체크
+                    trialChars += cleanText.length;
                     if (trialChars > MAX_TRIAL_CHARS) {
                         stopAll();
-                        alert("📝 무료 체험 글자 수(1,000자)를 초과했습니다.\n\n계속 사용하시려면 라이선스를 구매해주세요.");
-                        requestPayment(100000, '개인 라이선스');
+                        alert("📝 무료 체험 글자 수(20,000자)를 초과했습니다.");
                         return;
                     }
                 }
-                // -------------------------
 
-                if (final) {
-                    subtitleEl.textContent = final; subtitleEl.className = 'subtitle-text final';
-                    const translated = await translateText(final, document.getElementById('translateLang').value);
-                    addToTranscript(final, translated);
-                    setTimeout(() => { if (subtitleEl.textContent === final) { subtitleEl.className = 'subtitle-text empty'; subtitleEl.textContent = 'Waiting for speech...'; } }, 5000);
-                } else if (interim) { subtitleEl.textContent = interim; subtitleEl.className = 'subtitle-text interim'; }
-            };
+                const translated = await translateText(cleanText, targetLang);
+                addToTranscript(cleanText, translated);
+
+                const displayMsg = (subtitleMode === 'original') ? cleanText : translated;
+                subtitleEl.textContent = displayMsg;
+                subtitleEl.className = 'subtitle-text final';
+
+                setTimeout(() => {
+                    if (subtitleEl.textContent === displayMsg) {
+                        subtitleEl.className = 'subtitle-text empty';
+                        subtitleEl.textContent = 'Waiting for speech...';
+                    }
+                }, 5000);
+            }
+
             return recognition;
         }
 
@@ -914,7 +1049,14 @@
         function addToTranscript(original, translated) {
             const box = document.getElementById('transcriptBox');
             const item = document.createElement('div'); item.className = 'transcript-item';
-            item.innerHTML = `<div class="transcript-time">${getTimeString()}</div><div class="transcript-original">${original}</div><div class="transcript-translated">${translated}</div>`;
+            item.style.display = 'flex';
+            item.style.flexDirection = 'column';
+            item.style.gap = '5px';
+            item.innerHTML = `
+                <div class="transcript-time" style="font-size: 0.75em; opacity: 0.6;">${getTimeString()}</div>
+                <div class="transcript-original" style="color: #00d9ff; font-size: 1.1em; font-weight: 500; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 3px;">${original}</div>
+                <div class="transcript-translated" style="color: #ffffff; font-size: 1.1em;">${translated}</div>
+            `;
             box.appendChild(item); box.scrollTop = box.scrollHeight;
         }
         function clearTranscript() { document.getElementById('transcriptBox').innerHTML = ''; showToast('🗑️ Log cleared'); }

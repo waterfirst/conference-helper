@@ -3,6 +3,7 @@ const cors = require('cors');
 const fs = require('fs');
 const { TranslationServiceClient } = require('@google-cloud/translate');
 const admin = require('firebase-admin');
+const axios = require('axios');
 require('dotenv').config();
 
 const app = express();
@@ -21,19 +22,35 @@ if (fs.existsSync(localKeyPath)) {
 // Initialize Firebase Admin SDK
 if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
     try {
+        const serviceAccount = require(localKeyPath);
         admin.initializeApp({
-            credential: admin.credential.applicationDefault()
+            credential: admin.credential.cert(serviceAccount)
         });
-        console.log("Firebase Admin initialized successfully.");
+        console.log("✅ Firebase Admin initialized with service account.");
     } catch (e) {
-        console.error("Failed to initialize Firebase Admin:", e);
+        console.error("❌ Failed to initialize Firebase Admin:", e);
+        // Fallback or exit
     }
 } else {
-    console.warn("⚠️ NO CREDENTIALS FOUND. Authentication verification will fail.");
-    console.warn("Please download your service account key from web console and save it as 'backend/service-account.json'");
+    console.warn("⚠️ NO CREDENTIALS ENV FOUND. Using default credentials.");
+    try {
+        admin.initializeApp();
+    } catch (e) {
+        console.error("❌ Default init failed:", e);
+    }
 }
 
-const db = admin.apps.length ? admin.firestore() : null;
+let db = null;
+if (admin.apps.length) {
+    try {
+        // 'user'라는 특정 데이터베이스 ID를 안전하게 호출 (데이터베이스 ID 'user'가 확실한 경우)
+        db = admin.firestore('user');
+        console.log("✅ Connected to Firestore database ID: user");
+    } catch (e) {
+        console.error("⚠️ Failed to connect to Firestore 'user', using default DB:", e.message);
+        db = admin.firestore();
+    }
+}
 const translateClient = new TranslationServiceClient();
 
 const PROJECT_ID = process.env.PROJECT_ID || 'internation-conference-helper';
@@ -65,35 +82,40 @@ const verifyToken = async (req, res, next) => {
 };
 
 /**
- * Check if the user has a valid license (Quota, Subscription, etc.)
+ * Check if the user has a valid license (Trial period or isPaid status)
  */
-const checkLicense = async (uid) => {
+const checkLicense = async (email) => {
     if (!db) return true; // Bypass if DB not connected (Dev mode)
 
     try {
-        const userRef = db.collection('users').doc(uid);
+        const userRef = db.collection('users').doc(email); // Use email as Document ID
         const doc = await userRef.get();
 
         if (!doc.exists) {
-            console.log(`✨ New user detected: ${uid}. Creating free trial account.`);
+            console.log(`✨ New user detected: ${email}. Creating free trial account.`);
             await userRef.set({
-                subscriptionStatus: 'trial',
-                credits: 500, // Free 500 characters
-                createdAt: admin.firestore.FieldValue.serverTimestamp()
+                isPaid: false,
+                trialStartDate: admin.firestore.FieldValue.serverTimestamp(),
+                email: email
             });
             return true;
         }
 
         const userData = doc.data();
 
-        if (userData.subscriptionStatus === 'active' || userData.subscriptionStatus === 'trial') {
+        // 1. Premium Check
+        if (userData.isPaid === true) {
             return true;
         }
 
-        if (userData.credits > 0) {
-            // Deduct credit
-            await userRef.update({ credits: admin.firestore.FieldValue.increment(-1) });
-            return true;
+        // 2. Trial Period Check (5 Days)
+        if (userData.trialStartDate) {
+            const startDate = userData.trialStartDate.toDate();
+            const now = new Date();
+            const diffDays = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
+            if (diffDays <= 5) {
+                return true;
+            }
         }
 
         return false;
@@ -117,21 +139,20 @@ app.post('/translate', verifyToken, async (req, res) => {
     }
 
     try {
-        // 1. Check License/Quota
-        const hasLicense = await checkLicense(req.user.uid);
+        // 1. Check License/Quota using Email
+        const hasLicense = await checkLicense(req.user.email);
         if (!hasLicense) {
-            return res.status(403).json({ error: 'License invalid or quota exceeded. Please purchase a plan.' });
+            return res.status(403).json({ error: 'License invalid or trial expired. Please purchase a plan.' });
         }
 
         // 2. Call Google Cloud Translation API
         const request = {
             parent: `projects/${PROJECT_ID}/locations/${LOCATION}`,
             contents: [text],
-            mimeType: 'text/plain', // mime types: text/plain, text/html
+            mimeType: 'text/plain',
             targetLanguageCode: targetLang,
         };
 
-        // Note: This requires the Cloud Translation API to be enabled in GCP
         const [response] = await translateClient.translateText(request);
         const translatedText = response.translations[0].translatedText;
 
@@ -144,7 +165,6 @@ app.post('/translate', verifyToken, async (req, res) => {
 });
 
 // --- Payment Confirmation ---
-const axios = require('axios');
 
 app.post('/confirm-payment', async (req, res) => {
     const { paymentKey, orderId, amount } = req.body;
@@ -167,31 +187,36 @@ app.post('/confirm-payment', async (req, res) => {
             }
         });
 
-        // 2. Success - Generate License(s)
-        // Check orderId structure for UID: ORDER-UID-TIMESTAMP
-        let uid = null;
+        // 2. Success - Update Firestore
+        // Check orderId structure for Email: ORDER-EMAIL-TIMESTAMP
+        let email = null;
         if (orderId && orderId.startsWith('ORDER-')) {
-            const parts = orderId.split('-'); // ["ORDER", "UUID", "TIMESTAMP"]
-            if (parts.length >= 3) uid = parts[1];
+            const parts = orderId.split('-');
+            // parts[0] = "ORDER", parts[1] = encoded email, parts[2] = timestamp
+            if (parts.length >= 3) {
+                try {
+                    email = Buffer.from(parts[1], 'base64').toString('utf-8');
+                } catch (e) {
+                    console.error("Failed to decode email from orderId", parts[1]);
+                }
+            }
         }
 
-        // Generate License Key
         const licenseKey = `LICENSE-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
 
-        // 3. Update Database
         if (db) {
-            // A. Store License Log
+            // A. Store Transaction Log
             await db.collection('transactions').doc(orderId).set({
                 paymentKey, orderId, amount, status: 'DONE',
-                uid: uid || 'anon', licenseKey,
+                email: email || 'unknown', licenseKey,
                 createdAt: admin.firestore.FieldValue.serverTimestamp()
             });
 
-            // B. Auto-activate User if UID is present
-            if (uid && uid !== 'anon') {
-                console.log(`Auto-activating subscription for user: ${uid}`);
-                await db.collection('users').doc(uid).set({
-                    subscriptionStatus: 'active',
+            // B. Auto-activate User using Email as doc ID
+            if (email) {
+                console.log(`Auto-activating subscription for user: ${email}`);
+                await db.collection('users').doc(email).set({
+                    isPaid: true,
                     plan: amount >= 700000 ? 'lab' : 'personal',
                     licenseKey: licenseKey,
                     updatedAt: admin.firestore.FieldValue.serverTimestamp()
@@ -216,6 +241,7 @@ app.post('/confirm-payment', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 8080;
-app.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
+// Cloud Run REQUIRES listening on 0.0.0.0
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 Server is listening on 0.0.0.0:${PORT}`);
 });

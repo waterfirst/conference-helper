@@ -1,0 +1,17 @@
+{
+  "name": "translator-backend",
+  "version": "1.0.0",
+  "description": "Backend for Real-time Translator with SaaS features",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "dependencies": {
+    "@google-cloud/translate": "^8.0.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "firebase-admin": "^13.6.0"
+  }
+}

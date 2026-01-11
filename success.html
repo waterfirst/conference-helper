@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Payment Success - Conference Helper</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 20px;
+            font-family: -apple-system, sans-serif;
+            background: #0f0f1a;
+            color: #fff;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+        }
+
+        .card {
+            background: #1a1a2e;
+            padding: 30px;
+            border-radius: 20px;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+            border: 1px solid #333;
+            max-width: 500px;
+            width: 100%;
+            text-align: center;
+        }
+
+        h2 {
+            color: #00ff88;
+            margin-top: 0;
+        }
+
+        p {
+            color: #ccc;
+            line-height: 1.6;
+        }
+
+        .license-box {
+            background: #000;
+            padding: 15px;
+            border-radius: 10px;
+            font-family: monospace;
+            color: #00ff88;
+            border: 1px dashed #444;
+            margin: 20px 0;
+            word-break: break-all;
+            font-size: 1.2em;
+            white-space: pre-line;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #00b4db, #0083b0);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 12px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            margin-top: 10px;
+            width: 80%;
+        }
+
+        .btn:hover {
+            opacity: 0.9;
+        }
+
+        #loading {
+            font-size: 1.1em;
+            color: #aaa;
+        }
+
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #00ff88;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 20px;
+        }
+
+        @keyframes spin {
+            0% {
+                transform: rotate(0deg);
+            }
+
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="card">
+        <div id="loading">
+            <div class="spinner"></div>
+            <p>Verifying payment and generating license...</p>
+            <p style="font-size: 0.9em; color: #666;">Please do not close this window.</p>
+        </div>
+        <div id="result" style="display: none;">
+            <h2>🎉 Payment Successful!</h2>
+            <p>Thank you for your purchase.</p>
+            <p>Your License Key:</p>
+            <div class="license-box" id="licenseKeyDisplay"></div>
+            <button class="btn" onclick="copyLicense()">Copy Key</button>
+            <br><br>
+            <a href="index.html" class="btn" style="background: #333;">Return to App</a>
+        </div>
+        <div id="error" style="display: none;">
+            <h2 style="color: #ff6b6b;">Payment Verification Failed</h2>
+            <p id="errorMessage"></p>
+            <a href="index.html" class="btn" style="background: #333;">Return to App</a>
+        </div>
+    </div>
+
+    <script>
+        const urlParams = new URLSearchParams(window.location.search);
+        const paymentData = {
+            paymentKey: urlParams.get('paymentKey'),
+            orderId: urlParams.get('orderId'),
+            amount: urlParams.get('amount'),
+        };
+
+        const BACKEND_URL = 'https://translator-backend-258115702573.asia-northeast3.run.app'; // Same as index3.html
+
+        async function confirmPayment() {
+            if (!paymentData.paymentKey) {
+                showError('No payment data found.');
+                return;
+            }
+
+            try {
+                // Call Cloud Run Backend
+                const response = await fetch(`${BACKEND_URL}/confirm-payment`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(paymentData)
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    document.getElementById('loading').style.display = 'none';
+                    document.getElementById('result').style.display = 'block';
+                    document.getElementById('licenseKeyDisplay').innerText = Array.isArray(data.keys) ? data.keys.join('\n') : data.key;
+                    // Auto-save to localStorage so user is premium immediately
+                    localStorage.setItem('premium_license', data.key);
+                } else {
+                    showError(data.message || 'Verification failed');
+                }
+            } catch (err) {
+                console.error('Error:', err);
+                showError('Network error occurred. Please contact support.');
+            }
+        }
+
+        function showError(msg) {
+            document.getElementById('loading').style.display = 'none';
+            document.getElementById('error').style.display = 'block';
+            document.getElementById('errorMessage').textContent = msg;
+        }
+
+        function copyLicense() {
+            const text = document.getElementById('licenseKeyDisplay').innerText;
+            navigator.clipboard.writeText(text).then(() => alert('Copied to clipboard!'));
+        }
+
+        confirmPayment();
+    </script>
+</body>
+
+</html>

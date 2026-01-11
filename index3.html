@@ -604,6 +604,22 @@
                 </div>
             </div>
         </div>
+
+        <div class="card">
+            <div class="card-title">💎 License Plan</div>
+            <div class="btn-group" style="grid-template-columns: 1fr; gap: 10px;">
+                <button class="btn btn-primary" onclick="requestPayment(100000, '개인 라이선스')">
+                    👤 Personal License (100,000 KRW)
+                </button>
+                <button class="btn btn-capture" onclick="requestPayment(700000, '연구실 단체 패키지')">
+                    👨‍🔬 Lab Package (700,000 KRW / 10 Users)
+                </button>
+            </div>
+            <p style="font-size: 0.75em; color: #888; margin-top: 10px; text-align: center;">
+                * 10 unique license keys will be verified immediately upon purchase.
+            </p>
+        </div>
+
         <div class="card">
             <div class="card-title">📝 Translation Log</div>
             <div class="transcript-box" id="transcriptBox"></div>
@@ -636,7 +652,22 @@
         </div>
     </div>
     <canvas id="captureCanvas"></canvas>
+
+    <!-- Toss Payments SDK -->
+    <script src="https://js.tosspayments.com/v1/payment"></script>
+
     <script>
+        // --- LICENSE & PAYMENT SETUP ---
+        let trialChars = 0;
+        let trialStartTime = null;
+        const MAX_TRIAL_CHARS = 1000;
+        const MAX_TRIAL_MS = 5 * 60 * 1000; // 5 minutes
+        let isPremium = false; // Updated by backend checkSubscription
+
+        // Toss Payments Client Key (Test)
+        const clientKey = 'test_ck_D5bZzMqlcwBa29KGRJg8W480u0J9';
+        const tossPayments = TossPayments(clientKey);
+
         let recognition = null, isRecognizing = false, videoStream = null, capturedImages = [], currentModalImage = null;
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (!SpeechRecognition) document.getElementById('warning').classList.add('show');
@@ -792,9 +823,30 @@
         function deleteCapture(i) { capturedImages.splice(i, 1); updateGallery(); showToast('🗑️ Deleted'); }
         function clearGallery() { if (capturedImages.length === 0) { showToast('No images to clear'); return; } if (confirm('Delete all captured images?')) { capturedImages = []; updateGallery(); showToast('🗑️ All images cleared'); } }
 
+        function requestPayment(amount, orderName) {
+            if (!tossPayments) return showToast('Payment system loading...');
+            if (!currentUser && amount === 100000) {
+                alert('Please login first to link the license to your account.');
+                loginWithGoogle();
+                return;
+            }
+            const uid = currentUser ? currentUser.uid : 'anon';
+            // Order ID format: ORDER-UID-TIMESTAMP
+            const orderId = `ORDER-${uid}-${Date.now()}`;
+
+            tossPayments.requestPayment('카드', {
+                amount: amount,
+                orderId: orderId,
+                orderName: orderName,
+                customerName: currentUser ? currentUser.email : 'Guest',
+                successUrl: window.location.origin + '/conference-helper/success.html', // Fixed for GitHub Pages path
+                failUrl: window.location.origin + '/conference-helper/index.html',
+            });
+        }
+
         function initSpeechRecognition() {
             if (!SpeechRecognition) return null;
-            recognition = new SpeechRecognition();
+            const recognition = new SpeechRecognition();
             recognition.continuous = true; recognition.interimResults = true;
             recognition.lang = document.getElementById('recognitionLang').value;
             recognition.onstart = () => { isRecognizing = true; document.getElementById('statusDot').classList.add('active'); document.getElementById('statusText').textContent = 'Listening...'; document.getElementById('startBtn').style.display = 'none'; document.getElementById('stopBtn').style.display = 'flex'; };
@@ -804,6 +856,28 @@
                 const subtitleEl = document.getElementById('subtitleText');
                 let interim = '', final = '';
                 for (let i = e.resultIndex; i < e.results.length; i++) { if (e.results[i].isFinal) final += e.results[i][0].transcript; else interim += e.results[i][0].transcript; }
+
+                // --- TRIAL LIMIT CHECK ---
+                if (!isPremium && final.length > 0) {
+                    if (!trialStartTime) trialStartTime = Date.now();
+                    // 1. Time Limit
+                    if (Date.now() - trialStartTime > MAX_TRIAL_MS) {
+                        stopAll();
+                        alert("⏳ 무료 체험 시간(5분)이 종료되었습니다.\n\n계속 사용하시려면 라이선스를 구매해주세요.");
+                        requestPayment(100000, '개인 라이선스');
+                        return;
+                    }
+                    // 2. Char Limit
+                    trialChars += final.length;
+                    if (trialChars > MAX_TRIAL_CHARS) {
+                        stopAll();
+                        alert("📝 무료 체험 글자 수(1,000자)를 초과했습니다.\n\n계속 사용하시려면 라이선스를 구매해주세요.");
+                        requestPayment(100000, '개인 라이선스');
+                        return;
+                    }
+                }
+                // -------------------------
+
                 if (final) {
                     subtitleEl.textContent = final; subtitleEl.className = 'subtitle-text final';
                     const translated = await translateText(final, document.getElementById('translateLang').value);

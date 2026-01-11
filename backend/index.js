@@ -143,6 +143,78 @@ app.post('/translate', verifyToken, async (req, res) => {
     }
 });
 
+// --- Payment Confirmation ---
+const axios = require('axios');
+
+app.post('/confirm-payment', async (req, res) => {
+    const { paymentKey, orderId, amount } = req.body;
+
+    // 1. Verify with Toss Payments API
+    // WARNING: In production, use process.env.TOSS_SECRET_KEY
+    const TOSS_SECRET_KEY = process.env.TOSS_SECRET_KEY || 'test_sk_zRKBSZ6o75D4w7w9D2v3PXVDv9M1';
+    const widgetSecretKey = TOSS_SECRET_KEY;
+    const encryptedSecretKey = 'Basic ' + Buffer.from(widgetSecretKey + ':').toString('base64');
+
+    try {
+        const response = await axios.post('https://api.tosspayments.com/v1/payments/confirm', {
+            paymentKey,
+            orderId,
+            amount
+        }, {
+            headers: {
+                Authorization: encryptedSecretKey,
+                'Content-Type': 'application/json'
+            }
+        });
+
+        // 2. Success - Generate License(s)
+        // Check orderId structure for UID: ORDER-UID-TIMESTAMP
+        let uid = null;
+        if (orderId && orderId.startsWith('ORDER-')) {
+            const parts = orderId.split('-'); // ["ORDER", "UUID", "TIMESTAMP"]
+            if (parts.length >= 3) uid = parts[1];
+        }
+
+        // Generate License Key
+        const licenseKey = `LICENSE-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+
+        // 3. Update Database
+        if (db) {
+            // A. Store License Log
+            await db.collection('transactions').doc(orderId).set({
+                paymentKey, orderId, amount, status: 'DONE',
+                uid: uid || 'anon', licenseKey,
+                createdAt: admin.firestore.FieldValue.serverTimestamp()
+            });
+
+            // B. Auto-activate User if UID is present
+            if (uid && uid !== 'anon') {
+                console.log(`Auto-activating subscription for user: ${uid}`);
+                await db.collection('users').doc(uid).set({
+                    subscriptionStatus: 'active',
+                    plan: amount >= 700000 ? 'lab' : 'personal',
+                    licenseKey: licenseKey,
+                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
+                }, { merge: true });
+            }
+        }
+
+        // 4. Return to Client
+        res.json({
+            status: 'success',
+            message: 'Subscription activated',
+            key: licenseKey
+        });
+
+    } catch (e) {
+        console.error('Payment Verification Failed:', e.response ? e.response.data : e.message);
+        res.status(400).json({
+            status: 'fail',
+            message: e.response ? e.response.data.message : 'Payment verification failed'
+        });
+    }
+});
+
 const PORT = process.env.PORT || 8080;
 app.listen(PORT, () => {
     console.log(`Server listening on port ${PORT}`);

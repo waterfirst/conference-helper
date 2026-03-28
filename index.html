@@ -160,9 +160,26 @@
             display: flex;
             align-items: center;
             justify-content: center;
-            gap: 8px;
+            gap: 12px;
             padding: 10px;
             margin-bottom: 10px;
+        }
+
+        /* 볼륨 미터 스타일 추가 */
+        .volume-meter {
+            width: 100px;
+            height: 8px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .volume-meter-fill {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg, #00ff88, #00d9ff);
+            transition: width 0.1s ease;
         }
 
         .status-dot {
@@ -536,7 +553,8 @@
         <div class="header">
             <div style="display: flex; align-items: center; justify-content: center; gap: 15px; margin-bottom: 5px;">
                 <img src="logo.jpg" alt="ScholarBridge Logo"
-                    style="height: 50px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3);">
+                    onclick="handleLogoClick()"
+                    style="height: 50px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); cursor: pointer;">
                 <h1 style="margin: 0;">Real-Time Interpreter</h1>
             </div>
             <p>Developed by <strong>ScholarBridge</strong></p>
@@ -557,7 +575,7 @@
                 <div class="lang-row">
                     <span class="lang-label">Recognition</span>
                     <select id="recognitionLang">
-                        <option value="en-US">🇺🇸 English</option>
+                        <option value="en-US" selected>🇺🇸 English</option>
                         <option value="ko-KR">🇰🇷 한국어</option>
                         <option value="ja-JP">🇯🇵 日本語</option>
                         <option value="zh-CN">🇨🇳 中文</option>
@@ -575,14 +593,14 @@
                 <div class="lang-row">
                     <span class="lang-label">Translation</span>
                     <select id="translateLang">
-                        <option value="ko">🇰🇷 한국어</option>
+                        <option value="ko" selected>🇰🇷 한국어</option>
                         <option value="en">🇺🇸 English</option>
                         <option value="ja">🇯🇵 日本語</option>
                         <option value="zh">🇨🇳 中文</option>
                         <option value="id">🇮🇩 Bahasa Indonesia</option>
-                        <option value="vi">�🇳 Tiếng Việt</option>
+                        <option value="vi">��🇳 Tiếng Việt</option>
                         <option value="th">🇹🇭 ไทย</option>
-                        <option value="de">�🇩🇪 Deutsch</option>
+                        <option value="de">🇩🇪 Deutsch</option>
                         <option value="fr">🇫🇷 Français</option>
                         <option value="es">🇪🇸 Español</option>
                         <option value="ru">🇷🇺 Русский</option>
@@ -590,12 +608,12 @@
                         <option value="pt">🇵🇹 Português</option>
                     </select>
                 </div>
+                <!-- 마이크 설정 추가 -->
                 <div class="lang-row">
-                    <span class="lang-label">Subtitle View</span>
-                    <select id="subtitleMode" style="flex:1;">
-                        <option value="original">Show Original (인식 언어)</option>
-                        <option value="translated" selected>Show Translated (번역 언어)</option>
-                    </select>
+                    <span class="lang-label">🎙️ Microphone</span>
+                    <select id="micSelect" style="flex:1;"></select>
+                    <button onclick="getMicrophones()"
+                        style="padding: 5px 10px; border-radius: 5px; background: #333; color: white; border: 1px solid #555; cursor: pointer;">🔄</button>
                 </div>
                 <div class="camera-toggle">
                     <label>📷 Camera</label>
@@ -611,7 +629,12 @@
         <div class="card">
             <div class="card-title">📺 Live Subtitles</div>
             <div class="status-bar">
-                <div class="status-dot" id="statusDot"></div><span class="status-text" id="statusText">Ready</span>
+                <div class="status-dot" id="statusDot"></div>
+                <span class="status-text" id="statusText">Ready</span>
+                <!-- 볼륨 미터 추가 -->
+                <div class="volume-meter" title="Microphone Input Level">
+                    <div id="volumeMeterFill" class="volume-meter-fill"></div>
+                </div>
             </div>
             <div class="video-wrapper" id="videoWrapper">
                 <video id="videoElement" autoplay playsinline></video>
@@ -706,7 +729,9 @@
         function getDateTimeString() { return new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-'); }
 
         // --- CONFIGURATION ---
-        const BACKEND_URL = 'https://translator-backend-258115702573.asia-northeast3.run.app';
+        const BACKEND_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') 
+            ? 'http://localhost:8090' 
+            : 'https://translator-backend-258115702573.asia-northeast3.run.app';
         const firebaseConfig = {
             apiKey: "AIzaSyBkR6Tu6dDyAArQf2mrs7Tb7h97pfjjCFs",
             authDomain: "internation-conference-helper.firebaseapp.com",
@@ -729,7 +754,8 @@
         // 2. 권한 체크 로직 (구조: users 컬렉션 -> 이메일 문서)
         async function checkAccess(user) {
             // 관리자 이메일 체크
-            if (user.email === 'tearim07@gmail.com') {
+            const admins = ['tearim07@gmail.com', 'nakcho.choi@gmail.com'];
+            if (admins.includes(user.email)) {
                 isAdmin = true;
                 const badge = document.getElementById('statusBadge');
                 badge.textContent = "시스템 관리자 (무제한)";
@@ -805,35 +831,74 @@
             firebase.auth().signOut();
         }
 
-        async function translateText(text, targetLang) {
-            if (!currentUser) return text;
+        async function translateText(text, targetLang, sourceLang = 'en-US') {
+            if (!currentUser || !text) return text;
             try {
                 const token = await currentUser.getIdToken();
+                // 언어 코드가 'en-US' 같은 형태일 경우 'en'으로 잘라서 보냄 (백엔드 호환성)
+                const targetCode = targetLang.split('-')[0];
+                const sourceCode = sourceLang.split('-')[0];
+
                 const response = await fetch(`${BACKEND_URL}/translate`, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': `Bearer ${token}`
                     },
-                    body: JSON.stringify({ text, targetLang })
+                    body: JSON.stringify({ text, targetLang: targetCode, sourceLang: sourceCode })
                 });
 
                 if (!response.ok) {
                     if (response.status === 403) {
-                        const err = await response.json();
-                        showToast('⚠️ ' + (err.error || 'License invalid'));
-                        return text + ' (License Error)';
+                        showToast('⚠️ License Expired or Access Denied');
+                    } else {
+                        const errText = await response.text();
+                        console.error('Translation Server Error:', errText);
+                        showToast('⚠️ Translation error: ' + response.status);
                     }
-                    throw new Error('Server Error');
+                    return text;
                 }
 
                 const data = await response.json();
-                return data.translatedText;
+                const translated = data.translatedText || text;
+                
+                // [디버그] 번역이 원문과 동일하게 왔을 경우 경고 표시 (API 설정 문제 가능성)
+                if (translated === text && text.length > 2) {
+                    console.warn(`[Echo detected] Backend returned original text for: "${text}"`);
+                    if (data.warning) console.warn("Backend warning:", data.warning);
+                }
+                
+                return translated;
             } catch (e) {
-                console.error(e);
+                console.error('Translation Request Failed:', e);
+                showToast('⚠️ Translation service unreachable');
                 return text;
             }
         }
+
+        async function getMicrophones() {
+            try {
+                // 권한 먼저 요청
+                await navigator.mediaDevices.getUserMedia({ audio: true });
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const micSelect = document.getElementById('micSelect');
+                micSelect.innerHTML = '';
+
+                const audioInputs = devices.filter(device => device.kind === 'audioinput');
+                audioInputs.forEach(device => {
+                    const option = document.createElement('option');
+                    option.value = device.deviceId;
+                    option.text = device.label || `Microphone ${micSelect.length + 1}`;
+                    micSelect.appendChild(option);
+                });
+                showToast('🎙️ Microphones detected');
+            } catch (e) {
+                console.error('Mic Detection Error:', e);
+                showToast('⚠️ Could not detect microphones');
+            }
+        }
+        // 초기 로드 시 마이크 목록 가져오기
+        window.addEventListener('load', getMicrophones);
 
         async function startCamera() {
             if (!document.getElementById('cameraToggle').checked) { document.getElementById('videoWrapper').style.minHeight = '100px'; return true; }
@@ -963,7 +1028,6 @@
 
             recognition.onresult = async (e) => {
                 const subtitleEl = document.getElementById('subtitleText');
-                const subtitleMode = document.getElementById('subtitleMode').value;
                 let interim = '', final = '';
 
                 for (let i = e.resultIndex; i < e.results.length; i++) {
@@ -982,56 +1046,50 @@
                     subtitleEl.textContent = interim;
                     subtitleEl.className = 'subtitle-text interim';
 
-                    // [핵심] 1.5초간 변화가 없으면 강제로 문장 종료로 간주하고 번역 (감도 향상)
+                    // [핵심] 원거리 발화의 경우 호흡이 길거나 명확하지 않을 수 있으므로
+                    // 1.5초간 변화가 없으면 번역 수행 (판정 여유 증대)
                     silenceTimer = setTimeout(() => {
                         if (lastInterim) {
-                            console.log("Silence detected. Auto-finalizing interim results.");
+                            console.log("Silence detected. Auto-finalizing...");
                             processConfirmedText(lastInterim);
                             lastInterim = '';
                         }
-                    }, 1500);
+                    }, 1500); // 0.8s -> 1.5s
                 }
             };
 
             async function processConfirmedText(text) {
                 const cleanText = text.trim();
-                if (!cleanText || cleanText.length < 2) return;
+                if (!cleanText || cleanText.length < 1) return;
 
                 const subtitleEl = document.getElementById('subtitleText');
-                const subtitleMode = document.getElementById('subtitleMode').value;
                 const targetLang = document.getElementById('translateLang').value;
 
-                // --- TRIAL LIMIT CHECK --- 
-                // 관리자(isAdmin) 또는 결제유저(isPremium)는 체크 스킵
-                if (!isPremium && !isAdmin) {
-                    if (!trialStartTime) trialStartTime = Date.now();
-
-                    // 1시간 시간 체크
-                    const elapsed = Date.now() - trialStartTime;
-                    if (elapsed > MAX_TRIAL_MS) {
-                        stopAll();
-                        alert("⏳ 1시간 무료 체험 시간이 종료되었습니다.\n계속하시려면 라이선스를 구매해주세요.");
-                        return;
-                    }
-
-                    // 글자 수 체크
-                    trialChars += cleanText.length;
-                    if (trialChars > MAX_TRIAL_CHARS) {
-                        stopAll();
-                        alert("📝 무료 체험 글자 수(20,000자)를 초과했습니다.");
-                        return;
-                    }
-                }
-
-                const translated = await translateText(cleanText, targetLang);
-                addToTranscript(cleanText, translated);
-
-                const displayMsg = (subtitleMode === 'original') ? cleanText : translated;
-                subtitleEl.textContent = displayMsg;
+                // 1. 카메라 자막엔 무조건 인식 언어(원본) 표시
+                subtitleEl.textContent = cleanText;
                 subtitleEl.className = 'subtitle-text final';
 
+                // --- TRIAL LIMIT CHECK --- 
+                if (!isPremium && !isAdmin) {
+                    if (!trialStartTime) trialStartTime = Date.now();
+                    const elapsed = Date.now() - trialStartTime;
+                    if (elapsed > MAX_TRIAL_MS) { stopAll(); alert("⏳ 1시간 무료 체험 종료"); return; }
+                    trialChars += cleanText.length;
+                    if (trialChars > MAX_TRIAL_CHARS) { stopAll(); alert("📝 무료 체험 글자 수 초과"); return; }
+                }
+
+                // 2. 번역 수행 및 로그 기록
+                const sourceLang = document.getElementById('recognitionLang').value;
+                console.log(`[Translate Request] ${sourceLang} -> ${targetLang}: "${cleanText}"`);
+                
+                const translated = await translateText(cleanText, targetLang, sourceLang);
+                console.log(`[Translate Response] -> "${translated}"`);
+
+                // 원본과 번역본을 모두 로그에 기록
+                addToTranscript(cleanText, translated || "(번역 실패)", sourceLang, targetLang);
+
                 setTimeout(() => {
-                    if (subtitleEl.textContent === displayMsg) {
+                    if (subtitleEl.textContent === cleanText) {
                         subtitleEl.className = 'subtitle-text empty';
                         subtitleEl.textContent = 'Waiting for speech...';
                     }
@@ -1041,23 +1099,138 @@
             return recognition;
         }
 
-        async function startAll() { await startCamera(); startRecognition(); showToast('▶️ Started'); }
-        function stopAll() { stopRecognition(); stopCamera(); showToast('⏹️ Stopped'); }
-        function startRecognition() { if (!recognition) recognition = initSpeechRecognition(); if (recognition) { recognition.lang = document.getElementById('recognitionLang').value; try { recognition.start(); } catch (e) { } } }
-        function stopRecognition() { isRecognizing = false; if (recognition) try { recognition.stop(); } catch (e) { } const s = document.getElementById('subtitleText'); s.className = 'subtitle-text empty'; s.textContent = 'Press Start button'; }
+        async function startAll() {
+            showToast('⏳ Starting systems...');
+            await startCamera();
+            startRecognition();
+            showToast('▶️ Running');
+        }
+        function stopAll() {
+            stopRecognition();
+            stopCamera();
+            showToast('⏹️ Stopped');
+        }
+        let audioContext = null;
+        let volumeAnimation = null;
 
-        function addToTranscript(original, translated) {
+        function startVolumeMeter(stream) {
+            try {
+                if (audioContext) audioContext.close();
+                audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const analyser = audioContext.createAnalyser();
+                const source = audioContext.createMediaStreamSource(stream);
+                source.connect(analyser);
+                analyser.fftSize = 256;
+                const bufferLength = analyser.frequencyBinCount;
+                const dataArray = new Uint8Array(bufferLength);
+                const meterFill = document.getElementById('volumeMeterFill');
+
+                function draw() {
+                    if (!isRecognizing) return;
+                    volumeAnimation = requestAnimationFrame(draw);
+                    analyser.getByteFrequencyData(dataArray);
+                    let sum = 0;
+                    for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
+                    let average = sum / bufferLength;
+                    let percentage = Math.min(100, (average / 60) * 100); // 감도 조절
+                    if (meterFill) meterFill.style.width = percentage + '%';
+                }
+                draw();
+            } catch (e) { console.error("Volume meter failed:", e); }
+        }
+
+        async function startRecognition() {
+            if (!recognition) recognition = initSpeechRecognition();
+            if (recognition) {
+                // [개선] 원거리 인식율 향상을 위한 마이크 및 AGC 설정 강화
+                const selectedMicId = document.getElementById('micSelect').value;
+                const constraints = {
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true // 자동 게인 조절 활성화 (원거리 음성 증폭)
+                    }
+                };
+                if (selectedMicId) {
+                    constraints.audio.deviceId = { exact: selectedMicId };
+                }
+
+                try {
+                    // 브라우저의 오디오 서브시스템에 특정 제약 조건을 가진 스트림을 활성화시켜 STT 성능 유도
+                    const micStream = await navigator.mediaDevices.getUserMedia(constraints);
+                    startVolumeMeter(micStream);
+                    // STT가 중간에 끊기지 않도록 레퍼런스 유지
+                    window.currentMicStream = micStream;
+                } catch (e) {
+                    console.warn("Could not apply advanced mic constraints:", e);
+                }
+
+                recognition.lang = document.getElementById('recognitionLang').value;
+                try {
+                    recognition.start();
+                } catch (e) {
+                    console.log("Recognition already running or failed to start.");
+                }
+            }
+        }
+
+        function stopRecognition() {
+            isRecognizing = false;
+            if (recognition) try { recognition.stop(); } catch (e) { }
+            
+            // 오디오 리소스 해제
+            if (window.currentMicStream) {
+                window.currentMicStream.getTracks().forEach(t => t.stop());
+                window.currentMicStream = null;
+            }
+            if (audioContext) {
+                audioContext.close();
+                audioContext = null;
+            }
+            if (volumeAnimation) cancelAnimationFrame(volumeAnimation);
+            
+            const s = document.getElementById('subtitleText');
+            s.className = 'subtitle-text empty';
+            s.textContent = 'Press Start button';
+            const meterFill = document.getElementById('volumeMeterFill');
+            if (meterFill) meterFill.style.width = '0%';
+        }
+
+        function addToTranscript(original, translated, source, target) {
             const box = document.getElementById('transcriptBox');
             const item = document.createElement('div'); item.className = 'transcript-item';
-            item.style.display = 'flex';
-            item.style.flexDirection = 'column';
-            item.style.gap = '5px';
+            item.style.marginBottom = '15px';
+            item.style.padding = '12px';
+            item.style.borderLeft = '4px solid #00ff88';
+            item.style.background = 'rgba(255, 255, 255, 0.05)';
+            item.style.borderRadius = '0 8px 8px 0';
+
+            const langPair = `<span style="font-size: 0.7em; opacity: 0.5; margin-left: 8px;">(${source.split('-')[0]} ➔ ${target.split('-')[0]})</span>`;
+
             item.innerHTML = `
-                <div class="transcript-time" style="font-size: 0.75em; opacity: 0.6;">${getTimeString()}</div>
-                <div class="transcript-original" style="color: #00d9ff; font-size: 1.1em; font-weight: 500; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 3px;">${original}</div>
-                <div class="transcript-translated" style="color: #ffffff; font-size: 1.1em;">${translated}</div>
+                <div class="transcript-time" style="font-size: 0.75em; opacity: 0.5; margin-bottom: 6px;">${getTimeString()} ${langPair}</div>
+                <div class="transcript-original" style="color: #00d9ff; font-size: 1.05em; margin-bottom: 5px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px;">${original}</div>
+                <div class="transcript-translated" style="color: #ffffff; font-size: 1.2em; font-weight: 500;">${translated}</div>
             `;
             box.appendChild(item); box.scrollTop = box.scrollHeight;
+        }
+
+        let logoClickCount = 0;
+        function handleLogoClick() {
+            logoClickCount++;
+            if (logoClickCount === 3) {
+                logoClickCount = 0;
+                if (confirm('Run translation service diagnostic? (English -> Korean)')) {
+                    testTranslation();
+                }
+            }
+            setTimeout(() => { logoClickCount = 0; }, 2000);
+        }
+
+        async function testTranslation() {
+            showToast('🧪 Testing connection...');
+            const result = await translateText("This is a diagnostic test.", "ko", "en");
+            alert(`Diagnostic Result:\nOriginal: This is a diagnostic test.\nTranslated: ${result}`);
         }
         function clearTranscript() { document.getElementById('transcriptBox').innerHTML = ''; showToast('🗑️ Log cleared'); }
         function saveTranscript() {

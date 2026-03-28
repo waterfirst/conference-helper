@@ -12,49 +12,56 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// Auto-detect service account for local dev
+// --- CONFIGURATION ---
 const localKeyPath = './service-account.json';
+let serviceAccount = null;
 if (fs.existsSync(localKeyPath)) {
     console.log("Found local service account key. Setting credentials...");
+    serviceAccount = require(localKeyPath);
+    if (serviceAccount.private_key && serviceAccount.private_key.includes('\\n')) {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+    }
     process.env.GOOGLE_APPLICATION_CREDENTIALS = localKeyPath;
 }
 
 // Initialize Firebase Admin SDK
-if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
-    try {
-        const serviceAccount = require(localKeyPath);
-        admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount)
-        });
-        console.log("✅ Firebase Admin initialized with service account.");
-    } catch (e) {
-        console.error("❌ Failed to initialize Firebase Admin:", e);
-        // Fallback or exit
-    }
-} else {
-    console.warn("⚠️ NO CREDENTIALS ENV FOUND. Using default credentials.");
-    try {
+if (!admin.apps.length) {
+    if (serviceAccount) {
+        try {
+            admin.initializeApp({
+                credential: admin.credential.cert(serviceAccount)
+            });
+            console.log("✅ Firebase Admin initialized.");
+        } catch (e) {
+            console.error("❌ Firebase Admin init failed:", e.message);
+            admin.initializeApp();
+        }
+    } else {
         admin.initializeApp();
-    } catch (e) {
-        console.error("❌ Default init failed:", e);
     }
 }
+
+const PROJECT_ID = serviceAccount?.project_id || process.env.PROJECT_ID || 'internation-conference-helper';
+const LOCATION = 'global';
+
+// [개선] 인증 정보 명시적 주입 (UNAUTHENTICATED 에러 해결)
+const translateClient = serviceAccount ? new TranslationServiceClient({
+    credentials: {
+        client_email: serviceAccount.client_email,
+        private_key: serviceAccount.private_key
+    },
+    projectId: PROJECT_ID
+}) : new TranslationServiceClient();
 
 let db = null;
 if (admin.apps.length) {
     try {
-        // 'user'라는 특정 데이터베이스 ID를 안전하게 호출 (데이터베이스 ID 'user'가 확실한 경우)
         db = admin.firestore('user');
         console.log("✅ Connected to Firestore database ID: user");
     } catch (e) {
-        console.error("⚠️ Failed to connect to Firestore 'user', using default DB:", e.message);
         db = admin.firestore();
     }
 }
-const translateClient = new TranslationServiceClient();
-
-const PROJECT_ID = process.env.PROJECT_ID || 'internation-conference-helper';
-const LOCATION = 'global';
 
 /**
  * Middleware to verify Firebase Auth Token
@@ -85,10 +92,13 @@ const verifyToken = async (req, res, next) => {
  * Check if the user has a valid license (Trial period or isPaid status)
  */
 const checkLicense = async (email) => {
-    if (!db) return true; // Bypass if DB not connected (Dev mode)
+    if (!db) return true;
+
+    // [추가] 관리자 계정은 무제한 통과
+    if (email === 'tearim07@gmail.com' || email === 'nakcho.choi@gmail.com') return true;
 
     try {
-        const userRef = db.collection('users').doc(email); // Use email as Document ID
+        const userRef = db.collection('users').doc(email);
         const doc = await userRef.get();
 
         if (!doc.exists) {
@@ -131,36 +141,103 @@ app.get('/', (req, res) => {
     res.send('Translation API Service is running.');
 });
 
+/**
+ * 무료 번역 API (인증 불필요 - 즉시 작동 보장)
+ */
+async function translateFree(text, targetLang, sourceLang) {
+    try {
+        const sl = sourceLang.split('-')[0]; // 'en-US' -> 'en'
+        const tl = targetLang.split('-')[0]; // 'ko' -> 'ko'
+        
+        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
+        
+        const response = await axios.get(url, { timeout: 5000 });
+        
+        if (response.data && response.data[0]) {
+            // 응답 구조: [[["번역문","원문",null,null,10]],null,"en"]
+            let translated = '';
+            for (const segment of response.data[0]) {
+                if (segment[0]) translated += segment[0];
+            }
+            return translated.trim();
+        }
+        return null;
+    } catch (e) {
+        console.error("Free Translation Error:", e.message);
+        return null;
+    }
+}
+
+/**
+ * Cloud Translation API v3 (서비스 계정 인증 필요)
+ */
+async function translateWithCloudAPI(text, targetLang, sourceLang) {
+    try {
+        const request = {
+            parent: `projects/${PROJECT_ID}/locations/${LOCATION}`,
+            contents: [text],
+            mimeType: 'text/plain',
+            sourceLanguageCode: sourceLang,
+            targetLanguageCode: targetLang,
+        };
+        const [response] = await translateClient.translateText(request);
+        if (response.translations && response.translations.length > 0) {
+            return response.translations[0].translatedText;
+        }
+        return null;
+    } catch (e) {
+        console.error("Cloud Translation Error:", e.message);
+        return null;
+    }
+}
+
 app.post('/translate', verifyToken, async (req, res) => {
-    const { text, targetLang } = req.body;
+    const { text, targetLang, sourceLang } = req.body;
 
     if (!text || !targetLang) {
         return res.status(400).send('Missing text or targetLang');
     }
 
     try {
-        // 1. Check License/Quota using Email
+        // 1. Check License
         const hasLicense = await checkLicense(req.user.email);
         if (!hasLicense) {
-            return res.status(403).json({ error: 'License invalid or trial expired. Please purchase a plan.' });
+            return res.status(403).json({ error: 'License invalid or trial expired.' });
         }
 
-        // 2. Call Google Cloud Translation API
-        const request = {
-            parent: `projects/${PROJECT_ID}/locations/${LOCATION}`,
-            contents: [text],
-            mimeType: 'text/plain',
-            targetLanguageCode: targetLang,
-        };
+        const sl = sourceLang || 'en';
+        const tl = targetLang || 'ko';
+        console.log(`[Translate] ${sl} -> ${tl}: "${text.substring(0, 40)}..."`);
 
-        const [response] = await translateClient.translateText(request);
-        const translatedText = response.translations[0].translatedText;
+        let translatedText = null;
+        let engine = 'none';
 
-        res.json({ translatedText });
+        // 방법 1: 무료 번역 API (인증 불필요, 즉시 작동)
+        translatedText = await translateFree(text, tl, sl);
+        if (translatedText && translatedText !== text) {
+            engine = 'google-free';
+        }
+
+        // 방법 2: Cloud Translation API (서비스 계정 권한 필요)
+        if (!translatedText || translatedText === text) {
+            const cloudResult = await translateWithCloudAPI(text, tl, sl);
+            if (cloudResult && cloudResult !== text) {
+                translatedText = cloudResult;
+                engine = 'cloud-v3';
+            }
+        }
+
+        if (translatedText && translatedText !== text) {
+            console.log(`[Success] via ${engine}: "${translatedText.substring(0, 50)}..."`);
+            res.json({ translatedText, engine });
+        } else {
+            console.warn('[Fail] All translation engines failed.');
+            res.status(500).json({ error: 'All translation engines failed', translatedText: text });
+        }
 
     } catch (error) {
-        console.error('Translation error:', error);
-        res.status(500).send('Internal Server Error');
+        console.error('Final Translation failure:', error.message);
+        res.status(500).json({ error: 'Translation failed', details: error.message });
     }
 });
 

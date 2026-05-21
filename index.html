@@ -730,7 +730,7 @@
 
         // --- CONFIGURATION ---
         const BACKEND_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') 
-            ? 'http://localhost:8090' 
+            ? 'http://127.0.0.1:8090' 
             : 'https://translator-backend-258115702573.asia-northeast3.run.app';
         const firebaseConfig = {
             apiKey: "AIzaSyBkR6Tu6dDyAArQf2mrs7Tb7h97pfjjCFs",
@@ -832,9 +832,15 @@
         }
 
         async function translateText(text, targetLang, sourceLang = 'en-US') {
-            if (!currentUser || !text) return text;
+            const isLocal = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
+            if (!currentUser && !isLocal) return text;
+            if (!text) return text;
             try {
-                const token = await currentUser.getIdToken();
+                let token = 'local-bypass-token';
+                if (currentUser) {
+                    token = await currentUser.getIdToken();
+                }
+                
                 // 언어 코드가 'en-US' 같은 형태일 경우 'en'으로 잘라서 보냄 (백엔드 호환성)
                 const targetCode = targetLang.split('-')[0];
                 const sourceCode = sourceLang.split('-')[0];

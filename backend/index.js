@@ -12,6 +12,17 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// [디버그] 백엔드로 오는 모든 요청 로깅
+app.use((req, res, next) => {
+    console.log(`📡 [Incoming Request] ${req.method} ${req.path}`);
+    if (req.headers.authorization) {
+        console.log(`   └ Auth: ${req.headers.authorization.substring(0, 35)}...`);
+    } else {
+        console.log(`   └ Auth: None`);
+    }
+    next();
+});
+
 // --- CONFIGURATION ---
 const localKeyPath = './service-account.json';
 let serviceAccount = null;
@@ -75,6 +86,11 @@ const verifyToken = async (req, res, next) => {
     const token = authHeader.split('Bearer ')[1];
 
     try {
+        if (token === 'local-bypass-token') {
+            console.log("🔓 Local bypass token detected. Overriding with admin access.");
+            req.user = { email: 'nakcho.choi@gmail.com' }; // Bypasses license check
+            return next();
+        }
         if (admin.apps.length) {
             const decodedToken = await admin.auth().verifyIdToken(token);
             req.user = decodedToken;

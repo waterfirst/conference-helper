@@ -1,340 +1,632 @@
-const express = require('express');
-const cors = require('cors');
+const crypto = require('crypto');
 const fs = require('fs');
-const { TranslationServiceClient } = require('@google-cloud/translate');
-const admin = require('firebase-admin');
+const path = require('path');
+
 const axios = require('axios');
-require('dotenv').config();
+const cors = require('cors');
+const dotenv = require('dotenv');
+const express = require('express');
+const admin = require('firebase-admin');
+const { getFirestore, FieldValue } = require('firebase-admin/firestore');
+const { TranslationServiceClient } = require('@google-cloud/translate');
 
-const app = express();
+dotenv.config();
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+const PORT = Number(process.env.PORT || 8080);
+const OPENAI_API_BASE = 'https://api.openai.com/v1';
+const REALTIME_MODEL = process.env.REALTIME_TRANSLATION_MODEL || 'gpt-realtime-translate';
+const REALTIME_TRANSCRIPTION_MODEL = process.env.REALTIME_TRANSCRIPTION_MODEL || 'gpt-realtime-whisper';
+const TEXT_TRANSLATION_MODEL = process.env.TEXT_TRANSLATION_MODEL || 'gpt-5.6-luna';
+const SUMMARY_MODEL = process.env.SUMMARY_MODEL || 'gpt-5.6-terra';
+const FIRESTORE_DATABASE_ID = process.env.FIRESTORE_DATABASE_ID || 'user';
+const TRIAL_DAYS = Number(process.env.TRIAL_DAYS || 5);
+const MAX_TRANSLATION_CHARS = 5000;
+const MAX_SUMMARY_CHARS = 160000;
 
-// [디버그] 백엔드로 오는 모든 요청 로깅
-app.use((req, res, next) => {
-    console.log(`📡 [Incoming Request] ${req.method} ${req.path}`);
-    if (req.headers.authorization) {
-        console.log(`   └ Auth: ${req.headers.authorization.substring(0, 35)}...`);
-    } else {
-        console.log(`   └ Auth: None`);
+const TARGET_LANGUAGES = new Set([
+    'de', 'en', 'es', 'fr', 'id', 'it', 'ja', 'ko', 'pt', 'ru', 'th', 'vi', 'zh'
+]);
+
+const SOURCE_LANGUAGES = new Set([
+    'auto', 'de', 'en', 'es', 'fr', 'id', 'it', 'ja', 'ko', 'pt', 'ru', 'th', 'vi', 'zh'
+]);
+
+const PLAN_AMOUNTS = new Map([
+    [100000, { plan: 'personal', licenses: 1 }],
+    [700000, { plan: 'lab', licenses: 10 }]
+]);
+
+class AppError extends Error {
+    constructor(status, code, message, details) {
+        super(message);
+        this.status = status;
+        this.code = code;
+        this.details = details;
     }
-    next();
-});
-
-// --- CONFIGURATION ---
-const localKeyPath = './service-account.json';
-let serviceAccount = null;
-if (fs.existsSync(localKeyPath)) {
-    console.log("Found local service account key. Setting credentials...");
-    serviceAccount = require(localKeyPath);
-    if (serviceAccount.private_key && serviceAccount.private_key.includes('\\n')) {
-        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
-    }
-    process.env.GOOGLE_APPLICATION_CREDENTIALS = localKeyPath;
 }
 
-// Initialize Firebase Admin SDK
-if (!admin.apps.length) {
-    if (serviceAccount) {
-        try {
-            admin.initializeApp({
-                credential: admin.credential.cert(serviceAccount)
-            });
-            console.log("✅ Firebase Admin initialized.");
-        } catch (e) {
-            console.error("❌ Firebase Admin init failed:", e.message);
-            admin.initializeApp();
+const asyncHandler = (handler) => (req, res, next) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+};
+
+function normalizeLanguage(value, allowed, fallback) {
+    const normalized = String(value || fallback || '')
+        .trim()
+        .toLowerCase()
+        .split('-')[0];
+    if (!allowed.has(normalized)) {
+        throw new AppError(400, 'UNSUPPORTED_LANGUAGE', `Unsupported language: ${normalized || 'empty'}`);
+    }
+    return normalized;
+}
+
+function normalizeText(value, field, maxLength) {
+    if (typeof value !== 'string') {
+        throw new AppError(400, 'INVALID_INPUT', `${field} must be a string.`);
+    }
+    const text = value.trim();
+    if (!text) throw new AppError(400, 'INVALID_INPUT', `${field} is required.`);
+    if (text.length > maxLength) {
+        throw new AppError(413, 'INPUT_TOO_LARGE', `${field} exceeds ${maxLength.toLocaleString()} characters.`);
+    }
+    return text;
+}
+
+function safeIdentifier(user) {
+    const source = user.uid || user.email || 'anonymous';
+    return crypto.createHash('sha256').update(String(source)).digest('hex');
+}
+
+function extractResponseText(response) {
+    if (typeof response?.output_text === 'string') return response.output_text;
+    const pieces = [];
+    for (const item of response?.output || []) {
+        for (const content of item?.content || []) {
+            if (typeof content?.text === 'string') pieces.push(content.text);
         }
-    } else {
-        admin.initializeApp();
+    }
+    return pieces.join('').trim();
+}
+
+function buildTranscript(entries) {
+    if (!Array.isArray(entries) || entries.length === 0) {
+        throw new AppError(400, 'EMPTY_TRANSCRIPT', 'At least one transcript entry is required.');
+    }
+
+    const lines = entries.slice(-1200).map((entry, index) => {
+        const source = String(entry?.source || '').trim();
+        const translated = String(entry?.translated || '').trim();
+        const time = String(entry?.time || '').trim() || `#${index + 1}`;
+        if (!source && !translated) return '';
+        return `[${time}] ${source || '(source unavailable)'}${translated ? `\n→ ${translated}` : ''}`;
+    }).filter(Boolean);
+
+    return normalizeText(lines.join('\n\n'), 'transcript', MAX_SUMMARY_CHARS);
+}
+
+function summarySchema() {
+    return {
+        type: 'object',
+        additionalProperties: false,
+        required: [
+            'title', 'executive_summary', 'key_points', 'decisions',
+            'action_items', 'open_questions', 'presentation_outline', 'keywords'
+        ],
+        properties: {
+            title: { type: 'string' },
+            executive_summary: { type: 'string' },
+            key_points: { type: 'array', items: { type: 'string' } },
+            decisions: { type: 'array', items: { type: 'string' } },
+            action_items: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['owner', 'task', 'due'],
+                    properties: {
+                        owner: { type: ['string', 'null'] },
+                        task: { type: 'string' },
+                        due: { type: ['string', 'null'] }
+                    }
+                }
+            },
+            open_questions: { type: 'array', items: { type: 'string' } },
+            presentation_outline: {
+                type: 'array',
+                items: {
+                    type: 'object',
+                    additionalProperties: false,
+                    required: ['section', 'summary'],
+                    properties: {
+                        section: { type: 'string' },
+                        summary: { type: 'string' }
+                    }
+                }
+            },
+            keywords: { type: 'array', items: { type: 'string' } }
+        }
+    };
+}
+
+let firebaseState;
+
+function loadServiceAccount() {
+    const configuredPath = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    const credentialPath = configuredPath
+        ? path.resolve(configuredPath)
+        : path.join(__dirname, 'service-account.json');
+    if (!fs.existsSync(credentialPath)) return null;
+    return JSON.parse(fs.readFileSync(credentialPath, 'utf8'));
+}
+
+function getFirebaseServices() {
+    if (firebaseState) return firebaseState;
+
+    const serviceAccount = loadServiceAccount();
+    if (!admin.apps.length) {
+        const options = serviceAccount
+            ? { credential: admin.credential.cert(serviceAccount) }
+            : {};
+        admin.initializeApp(options);
+    }
+
+    firebaseState = {
+        auth: admin.auth(),
+        db: getFirestore(admin.app(), FIRESTORE_DATABASE_ID)
+    };
+    return firebaseState;
+}
+
+async function verifyFirebaseUser(token) {
+    if (!token) throw new AppError(401, 'AUTH_REQUIRED', 'Sign in is required.');
+    try {
+        const { auth } = getFirebaseServices();
+        return await auth.verifyIdToken(token);
+    } catch (error) {
+        console.warn(JSON.stringify({ event: 'auth_failed', reason: error.code || error.message }));
+        throw new AppError(401, 'INVALID_TOKEN', 'Your session is invalid or expired.');
     }
 }
 
-const PROJECT_ID = serviceAccount?.project_id || process.env.PROJECT_ID || 'internation-conference-helper';
-const LOCATION = 'global';
-
-// [개선] 인증 정보 명시적 주입 (UNAUTHENTICATED 에러 해결)
-const translateClient = serviceAccount ? new TranslationServiceClient({
-    credentials: {
-        client_email: serviceAccount.client_email,
-        private_key: serviceAccount.private_key
-    },
-    projectId: PROJECT_ID
-}) : new TranslationServiceClient();
-
-let db = null;
-if (admin.apps.length) {
-    try {
-        db = admin.firestore('user');
-        console.log("✅ Connected to Firestore database ID: user");
-    } catch (e) {
-        db = admin.firestore();
-    }
+function adminEmails() {
+    return new Set(String(process.env.ADMIN_EMAILS || '')
+        .split(',')
+        .map((email) => email.trim().toLowerCase())
+        .filter(Boolean));
 }
 
-/**
- * Middleware to verify Firebase Auth Token
- */
-const verifyToken = async (req, res, next) => {
-    const authHeader = req.headers.authorization;
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
-        return res.status(401).send('Unauthorized: No token provided');
+async function checkUserLicense(user) {
+    const email = String(user.email || '').toLowerCase();
+    if (!email) throw new AppError(403, 'EMAIL_REQUIRED', 'A verified email is required.');
+    if (adminEmails().has(email)) return { valid: true, plan: 'admin', daysRemaining: null };
+
+    const { db } = getFirebaseServices();
+    const userRef = db.collection('users').doc(email);
+    const snapshot = await userRef.get();
+
+    if (!snapshot.exists) {
+        await userRef.set({
+            email,
+            isPaid: false,
+            trialStartDate: FieldValue.serverTimestamp(),
+            createdAt: FieldValue.serverTimestamp()
+        });
+        return { valid: true, plan: 'trial', daysRemaining: TRIAL_DAYS };
     }
 
-    const token = authHeader.split('Bearer ')[1];
+    const data = snapshot.data();
+    if (data.isPaid === true) {
+        return { valid: true, plan: data.plan || 'personal', daysRemaining: null };
+    }
 
+    const start = data.trialStartDate?.toDate?.();
+    if (!start) return { valid: false, plan: 'expired', daysRemaining: 0 };
+
+    const elapsedDays = Math.floor((Date.now() - start.getTime()) / 86400000);
+    const daysRemaining = Math.max(0, TRIAL_DAYS - elapsedDays);
+    return { valid: elapsedDays < TRIAL_DAYS, plan: 'trial', daysRemaining };
+}
+
+let googleTranslateClient;
+
+function getGoogleTranslateClient() {
+    if (googleTranslateClient) return googleTranslateClient;
+    const serviceAccount = loadServiceAccount();
+    googleTranslateClient = serviceAccount
+        ? new TranslationServiceClient({
+            credentials: {
+                client_email: serviceAccount.client_email,
+                private_key: serviceAccount.private_key
+            },
+            projectId: serviceAccount.project_id
+        })
+        : new TranslationServiceClient();
+    return googleTranslateClient;
+}
+
+async function translateWithGoogle(text, targetLanguage, sourceLanguage) {
+    const projectId = process.env.PROJECT_ID || loadServiceAccount()?.project_id;
+    if (!projectId) throw new AppError(503, 'GOOGLE_TRANSLATE_NOT_CONFIGURED', 'Google translation is not configured.');
+
+    const request = {
+        parent: `projects/${projectId}/locations/global`,
+        contents: [text],
+        mimeType: 'text/plain',
+        targetLanguageCode: targetLanguage
+    };
+    if (sourceLanguage !== 'auto') request.sourceLanguageCode = sourceLanguage;
+
+    const [response] = await getGoogleTranslateClient().translateText(request);
+    const translated = response.translations?.[0]?.translatedText?.trim();
+    if (!translated) throw new AppError(502, 'GOOGLE_TRANSLATION_FAILED', 'Google translation returned no text.');
+    return translated;
+}
+
+async function openAIRequest(pathname, body, safetyId, fetchImpl = global.fetch) {
+    if (!process.env.OPENAI_API_KEY) {
+        throw new AppError(503, 'OPENAI_NOT_CONFIGURED', 'OpenAI realtime translation is not configured.');
+    }
+    if (typeof fetchImpl !== 'function') {
+        throw new AppError(500, 'FETCH_UNAVAILABLE', 'This server requires Node.js 20 or newer.');
+    }
+
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 45000);
+    let response;
     try {
-        if (token === 'local-bypass-token') {
-            console.log("🔓 Local bypass token detected. Overriding with admin access.");
-            req.user = { email: 'nakcho.choi@gmail.com' }; // Bypasses license check
+        response = await fetchImpl(`${OPENAI_API_BASE}${pathname}`, {
+            method: 'POST',
+            headers: {
+                Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+                'Content-Type': 'application/json',
+                'OpenAI-Safety-Identifier': safetyId
+            },
+            body: JSON.stringify(body),
+            signal: controller.signal
+        });
+    } catch (error) {
+        if (error.name === 'AbortError') {
+            throw new AppError(504, 'AI_TIMEOUT', 'The AI service timed out.');
+        }
+        throw new AppError(502, 'AI_UNREACHABLE', 'The AI service is unreachable.', error.message);
+    } finally {
+        clearTimeout(timeout);
+    }
+
+    const raw = await response.text();
+    let payload;
+    try {
+        payload = raw ? JSON.parse(raw) : {};
+    } catch {
+        payload = { raw };
+    }
+
+    if (!response.ok) {
+        const upstreamMessage = payload?.error?.message || payload?.message || `HTTP ${response.status}`;
+        throw new AppError(502, 'AI_UPSTREAM_ERROR', 'The AI service rejected the request.', upstreamMessage);
+    }
+    return payload;
+}
+
+function createRateLimiter({ limit, windowMs, prefix }) {
+    const buckets = new Map();
+    return (req, res, next) => {
+        const key = `${prefix}:${req.user?.uid || req.ip}`;
+        const now = Date.now();
+        const bucket = buckets.get(key);
+        if (!bucket || now >= bucket.resetAt) {
+            buckets.set(key, { count: 1, resetAt: now + windowMs });
             return next();
         }
-        if (admin.apps.length) {
-            const decodedToken = await admin.auth().verifyIdToken(token);
-            req.user = decodedToken;
-            next();
-        } else {
-            throw new Error("Server missing credentials - cannot verify token.");
+        if (bucket.count >= limit) {
+            res.set('Retry-After', String(Math.ceil((bucket.resetAt - now) / 1000)));
+            return next(new AppError(429, 'RATE_LIMITED', 'Too many requests. Please wait and try again.'));
         }
-    } catch (error) {
-        console.error('Error verifying auth token:', error);
-        res.status(403).send('Unauthorized: Invalid token');
-    }
-};
-
-/**
- * Check if the user has a valid license (Trial period or isPaid status)
- */
-const checkLicense = async (email) => {
-    if (!db) return true;
-
-    // [추가] 관리자 계정은 무제한 통과
-    if (email === 'tearim07@gmail.com' || email === 'nakcho.choi@gmail.com') return true;
-
-    try {
-        const userRef = db.collection('users').doc(email);
-        const doc = await userRef.get();
-
-        if (!doc.exists) {
-            console.log(`✨ New user detected: ${email}. Creating free trial account.`);
-            await userRef.set({
-                isPaid: false,
-                trialStartDate: admin.firestore.FieldValue.serverTimestamp(),
-                email: email
-            });
-            return true;
-        }
-
-        const userData = doc.data();
-
-        // 1. Premium Check
-        if (userData.isPaid === true) {
-            return true;
-        }
-
-        // 2. Trial Period Check (5 Days)
-        if (userData.trialStartDate) {
-            const startDate = userData.trialStartDate.toDate();
-            const now = new Date();
-            const diffDays = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
-            if (diffDays <= 5) {
-                return true;
-            }
-        }
-
-        return false;
-    } catch (error) {
-        console.error('License check failed:', error);
-        return false;
-    }
-};
-
-// --- Routes ---
-
-app.get('/', (req, res) => {
-    res.send('Translation API Service is running.');
-});
-
-/**
- * 무료 번역 API (인증 불필요 - 즉시 작동 보장)
- */
-async function translateFree(text, targetLang, sourceLang) {
-    try {
-        const sl = sourceLang.split('-')[0]; // 'en-US' -> 'en'
-        const tl = targetLang.split('-')[0]; // 'ko' -> 'ko'
-        
-        const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sl}&tl=${tl}&dt=t&q=${encodeURIComponent(text)}`;
-        
-        const response = await axios.get(url, { timeout: 5000 });
-        
-        if (response.data && response.data[0]) {
-            // 응답 구조: [[["번역문","원문",null,null,10]],null,"en"]
-            let translated = '';
-            for (const segment of response.data[0]) {
-                if (segment[0]) translated += segment[0];
-            }
-            return translated.trim();
-        }
-        return null;
-    } catch (e) {
-        console.error("Free Translation Error:", e.message);
-        return null;
-    }
+        bucket.count += 1;
+        return next();
+    };
 }
 
-/**
- * Cloud Translation API v3 (서비스 계정 인증 필요)
- */
-async function translateWithCloudAPI(text, targetLang, sourceLang) {
-    try {
-        const request = {
-            parent: `projects/${PROJECT_ID}/locations/${LOCATION}`,
-            contents: [text],
-            mimeType: 'text/plain',
-            sourceLanguageCode: sourceLang,
-            targetLanguageCode: targetLang,
-        };
-        const [response] = await translateClient.translateText(request);
-        if (response.translations && response.translations.length > 0) {
-            return response.translations[0].translatedText;
-        }
-        return null;
-    } catch (e) {
-        console.error("Cloud Translation Error:", e.message);
-        return null;
-    }
+function allowedOrigins() {
+    const configured = String(process.env.ALLOWED_ORIGINS || '')
+        .split(',')
+        .map((origin) => origin.trim())
+        .filter(Boolean);
+    return new Set(configured.length ? configured : [
+        'https://waterfirst.github.io',
+        'http://localhost:8080',
+        'http://127.0.0.1:8080',
+        'http://localhost:5500',
+        'http://127.0.0.1:5500'
+    ]);
 }
 
-app.post('/translate', verifyToken, async (req, res) => {
-    const { text, targetLang, sourceLang } = req.body;
+function createApp(options = {}) {
+    const app = express();
+    const origins = allowedOrigins();
+    const authenticate = options.authenticate || verifyFirebaseUser;
+    const licenseCheck = options.licenseCheck || checkUserLicense;
+    const requestOpenAI = options.openAIRequest || openAIRequest;
 
-    if (!text || !targetLang) {
-        return res.status(400).send('Missing text or targetLang');
-    }
-
-    try {
-        // 1. Check License
-        const hasLicense = await checkLicense(req.user.email);
-        if (!hasLicense) {
-            return res.status(403).json({ error: 'License invalid or trial expired.' });
-        }
-
-        const sl = sourceLang || 'en';
-        const tl = targetLang || 'ko';
-        console.log(`[Translate] ${sl} -> ${tl}: "${text.substring(0, 40)}..."`);
-
-        let translatedText = null;
-        let engine = 'none';
-
-        // 방법 1: 무료 번역 API (인증 불필요, 즉시 작동)
-        translatedText = await translateFree(text, tl, sl);
-        if (translatedText && translatedText !== text) {
-            engine = 'google-free';
-        }
-
-        // 방법 2: Cloud Translation API (서비스 계정 권한 필요)
-        if (!translatedText || translatedText === text) {
-            const cloudResult = await translateWithCloudAPI(text, tl, sl);
-            if (cloudResult && cloudResult !== text) {
-                translatedText = cloudResult;
-                engine = 'cloud-v3';
-            }
-        }
-
-        if (translatedText && translatedText !== text) {
-            console.log(`[Success] via ${engine}: "${translatedText.substring(0, 50)}..."`);
-            res.json({ translatedText, engine });
-        } else {
-            console.warn('[Fail] All translation engines failed.');
-            res.status(500).json({ error: 'All translation engines failed', translatedText: text });
-        }
-
-    } catch (error) {
-        console.error('Final Translation failure:', error.message);
-        res.status(500).json({ error: 'Translation failed', details: error.message });
-    }
-});
-
-// --- Payment Confirmation ---
-
-app.post('/confirm-payment', async (req, res) => {
-    const { paymentKey, orderId, amount } = req.body;
-
-    // 1. Verify with Toss Payments API
-    // WARNING: In production, use process.env.TOSS_SECRET_KEY
-    const TOSS_SECRET_KEY = process.env.TOSS_SECRET_KEY || 'test_sk_zRKBSZ6o75D4w7w9D2v3PXVDv9M1';
-    const widgetSecretKey = TOSS_SECRET_KEY;
-    const encryptedSecretKey = 'Basic ' + Buffer.from(widgetSecretKey + ':').toString('base64');
-
-    try {
-        const response = await axios.post('https://api.tosspayments.com/v1/payments/confirm', {
-            paymentKey,
-            orderId,
-            amount
-        }, {
-            headers: {
-                Authorization: encryptedSecretKey,
-                'Content-Type': 'application/json'
-            }
+    app.disable('x-powered-by');
+    app.set('trust proxy', 1);
+    app.use(cors({
+        origin(origin, callback) {
+            if (!origin || origins.has(origin)) return callback(null, true);
+            return callback(new AppError(403, 'ORIGIN_NOT_ALLOWED', 'This origin is not allowed.'));
+        },
+        methods: ['GET', 'POST', 'OPTIONS'],
+        allowedHeaders: ['Authorization', 'Content-Type', 'X-Request-Id']
+    }));
+    app.use(express.json({ limit: '2mb' }));
+    app.use((req, res, next) => {
+        req.id = req.get('X-Request-Id') || crypto.randomUUID();
+        res.set('X-Request-Id', req.id);
+        const startedAt = Date.now();
+        res.on('finish', () => {
+            console.log(JSON.stringify({
+                event: 'request', requestId: req.id, method: req.method,
+                path: req.path, status: res.statusCode, durationMs: Date.now() - startedAt
+            }));
         });
+        next();
+    });
 
-        // 2. Success - Update Firestore
-        // Check orderId structure for Email: ORDER-EMAIL-TIMESTAMP
-        let email = null;
-        if (orderId && orderId.startsWith('ORDER-')) {
-            const parts = orderId.split('-');
-            // parts[0] = "ORDER", parts[1] = encoded email, parts[2] = timestamp
-            if (parts.length >= 3) {
-                try {
-                    email = Buffer.from(parts[1], 'base64').toString('utf-8');
-                } catch (e) {
-                    console.error("Failed to decode email from orderId", parts[1]);
-                }
-            }
+    const requireUser = asyncHandler(async (req, _res, next) => {
+        const header = req.get('Authorization') || '';
+        const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+        req.user = await authenticate(token);
+        next();
+    });
+
+    const requireLicense = asyncHandler(async (req, _res, next) => {
+        req.license = await licenseCheck(req.user);
+        if (!req.license.valid) {
+            throw new AppError(403, 'LICENSE_EXPIRED', 'Your trial or license has expired.');
         }
+        next();
+    });
 
-        const licenseKey = `LICENSE-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+    const realtimeLimit = createRateLimiter({ limit: 20, windowMs: 60000, prefix: 'realtime' });
+    const translateLimit = createRateLimiter({ limit: 90, windowMs: 60000, prefix: 'translate' });
+    const summaryLimit = createRateLimiter({ limit: 8, windowMs: 60000, prefix: 'summary' });
 
-        if (db) {
-            // A. Store Transaction Log
-            await db.collection('transactions').doc(orderId).set({
-                paymentKey, orderId, amount, status: 'DONE',
-                email: email || 'unknown', licenseKey,
-                createdAt: admin.firestore.FieldValue.serverTimestamp()
-            });
+    app.get('/', (_req, res) => {
+        res.json({ service: 'Conference Helper API', status: 'ok' });
+    });
 
-            // B. Auto-activate User using Email as doc ID
-            if (email) {
-                console.log(`Auto-activating subscription for user: ${email}`);
-                await db.collection('users').doc(email).set({
-                    isPaid: true,
-                    plan: amount >= 700000 ? 'lab' : 'personal',
-                    licenseKey: licenseKey,
-                    updatedAt: admin.firestore.FieldValue.serverTimestamp()
-                }, { merge: true });
-            }
-        }
-
-        // 4. Return to Client
+    app.get('/health', (_req, res) => {
         res.json({
-            status: 'success',
-            message: 'Subscription activated',
-            key: licenseKey
+            status: 'ok',
+            openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
+            realtimeModel: REALTIME_MODEL,
+            summaryModel: SUMMARY_MODEL,
+            timestamp: new Date().toISOString()
         });
+    });
 
-    } catch (e) {
-        console.error('Payment Verification Failed:', e.response ? e.response.data : e.message);
-        res.status(400).json({
-            status: 'fail',
-            message: e.response ? e.response.data.message : 'Payment verification failed'
+    app.get('/me', requireUser, asyncHandler(async (req, res) => {
+        const license = await licenseCheck(req.user);
+        res.json({
+            email: req.user.email,
+            displayName: req.user.name || null,
+            license
         });
-    }
-});
+    }));
 
-const PORT = process.env.PORT || 8080;
-// Cloud Run REQUIRES listening on 0.0.0.0
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`🚀 Server is listening on 0.0.0.0:${PORT}`);
-});
+    app.post('/realtime/session', requireUser, requireLicense, realtimeLimit, asyncHandler(async (req, res) => {
+        const targetLanguage = normalizeLanguage(req.body?.targetLanguage, TARGET_LANGUAGES, 'ko');
+        const payload = await requestOpenAI(
+            '/realtime/translations/client_secrets',
+            {
+                session: {
+                    model: REALTIME_MODEL,
+                    audio: {
+                        input: {
+                            transcription: { model: REALTIME_TRANSCRIPTION_MODEL },
+                            noise_reduction: { type: 'near_field' }
+                        },
+                        output: { language: targetLanguage }
+                    }
+                }
+            },
+            safeIdentifier(req.user)
+        );
+
+        const clientSecret = typeof payload.client_secret === 'string'
+            ? payload.client_secret
+            : payload.client_secret?.value || payload.value;
+        const expiresAt = payload.client_secret?.expires_at || payload.expires_at || null;
+        if (!clientSecret) {
+            throw new AppError(502, 'INVALID_SESSION_RESPONSE', 'Realtime session did not return a client secret.');
+        }
+        res.set('Cache-Control', 'no-store');
+        res.json({
+            client_secret: clientSecret,
+            expires_at: expiresAt,
+            model: REALTIME_MODEL,
+            target_language: targetLanguage
+        });
+    }));
+
+    app.post('/translate', requireUser, requireLicense, translateLimit, asyncHandler(async (req, res) => {
+        const text = normalizeText(req.body?.text, 'text', MAX_TRANSLATION_CHARS);
+        const sourceLanguage = normalizeLanguage(req.body?.sourceLang, SOURCE_LANGUAGES, 'auto');
+        const targetLanguage = normalizeLanguage(req.body?.targetLang, TARGET_LANGUAGES, 'ko');
+        const glossary = String(req.body?.glossary || '').trim().slice(0, 2000);
+        const context = String(req.body?.context || '').trim().slice(-4000);
+
+        if (sourceLanguage === targetLanguage) {
+            return res.json({ translatedText: text, engine: 'identity' });
+        }
+
+        if (process.env.OPENAI_API_KEY) {
+            try {
+                const response = await requestOpenAI(
+                    '/responses',
+                    {
+                        model: TEXT_TRANSLATION_MODEL,
+                        reasoning: { effort: 'none' },
+                        instructions: [
+                            'You are a professional simultaneous interpreter for technical conferences.',
+                            sourceLanguage === 'auto'
+                                ? `Detect the source language and translate it into ${targetLanguage}.`
+                                : `Translate from ${sourceLanguage} into ${targetLanguage}.`,
+                            'Return only the translation. Preserve names, numbers, units, equations, acronyms, and uncertainty.',
+                            glossary ? `Preferred terminology: ${glossary}` : '',
+                            context ? `Recent context for disambiguation only: ${context}` : ''
+                        ].filter(Boolean).join('\n'),
+                        input: text,
+                        max_output_tokens: 2000
+                    },
+                    safeIdentifier(req.user)
+                );
+                const translatedText = extractResponseText(response);
+                if (translatedText) return res.json({ translatedText, engine: TEXT_TRANSLATION_MODEL });
+            } catch (error) {
+                console.warn(JSON.stringify({ event: 'text_translation_fallback', requestId: req.id, reason: error.code }));
+            }
+        }
+
+        const translatedText = await translateWithGoogle(text, targetLanguage, sourceLanguage);
+        return res.json({ translatedText, engine: 'google-cloud-translate-v3' });
+    }));
+
+    app.post('/summaries', requireUser, requireLicense, summaryLimit, asyncHandler(async (req, res) => {
+        const transcript = buildTranscript(req.body?.entries);
+        const mode = req.body?.mode === 'presentation' ? 'presentation' : 'meeting';
+        const outputLanguage = normalizeLanguage(req.body?.outputLanguage, TARGET_LANGUAGES, 'ko');
+        const meetingTitle = String(req.body?.title || '').trim().slice(0, 160);
+        const glossary = String(req.body?.glossary || '').trim().slice(0, 2000);
+
+        const response = await requestOpenAI(
+            '/responses',
+            {
+                model: SUMMARY_MODEL,
+                reasoning: { effort: 'low' },
+                instructions: [
+                    `Create an evidence-grounded ${mode === 'meeting' ? 'meeting record' : 'presentation brief'} in language code ${outputLanguage}.`,
+                    'Use only facts present in the transcript. Do not invent speakers, owners, deadlines, decisions, or claims.',
+                    'When an owner or due date is not explicit, return null. Keep technical terms, numbers, units, and qualifications exact.',
+                    mode === 'meeting'
+                        ? 'Prioritize decisions, disagreements, follow-up actions, owners, due dates, and unresolved questions.'
+                        : 'Prioritize the thesis, section flow, evidence, methods, results, limitations, and audience questions.',
+                    meetingTitle ? `Working title: ${meetingTitle}` : '',
+                    glossary ? `Domain terminology: ${glossary}` : ''
+                ].filter(Boolean).join('\n'),
+                input: transcript,
+                max_output_tokens: 6000,
+                text: {
+                    format: {
+                        type: 'json_schema',
+                        name: 'conference_summary',
+                        strict: true,
+                        schema: summarySchema()
+                    }
+                }
+            },
+            safeIdentifier(req.user)
+        );
+
+        const outputText = extractResponseText(response);
+        let summary;
+        try {
+            summary = JSON.parse(outputText);
+        } catch {
+            throw new AppError(502, 'INVALID_SUMMARY_RESPONSE', 'The summary service returned invalid structured data.');
+        }
+        res.json({ summary, model: SUMMARY_MODEL, mode });
+    }));
+
+    app.post('/confirm-payment', requireUser, asyncHandler(async (req, res) => {
+        if (!process.env.TOSS_SECRET_KEY) {
+            throw new AppError(503, 'PAYMENT_NOT_CONFIGURED', 'Payment confirmation is not configured.');
+        }
+        const paymentKey = normalizeText(req.body?.paymentKey, 'paymentKey', 300);
+        const orderId = normalizeText(req.body?.orderId, 'orderId', 100);
+        const amount = Number(req.body?.amount);
+        const selectedPlan = PLAN_AMOUNTS.get(amount);
+        if (!selectedPlan) throw new AppError(400, 'INVALID_PLAN_AMOUNT', 'Unknown plan amount.');
+
+        const { db } = getFirebaseServices();
+        const transactionRef = db.collection('transactions').doc(orderId);
+        const existing = await transactionRef.get();
+        if (existing.exists) {
+            const data = existing.data();
+            if (data.email !== String(req.user.email).toLowerCase()) {
+                throw new AppError(403, 'ORDER_OWNER_MISMATCH', 'Order belongs to another account.');
+            }
+            return res.json({ status: 'success', plan: data.plan, keys: data.licenseKeys });
+        }
+
+        const basicKey = Buffer.from(`${process.env.TOSS_SECRET_KEY}:`).toString('base64');
+        const confirmation = await axios.post(
+            'https://api.tosspayments.com/v1/payments/confirm',
+            { paymentKey, orderId, amount },
+            { headers: { Authorization: `Basic ${basicKey}`, 'Content-Type': 'application/json' }, timeout: 15000 }
+        );
+        const paid = confirmation.data;
+        if (paid.status !== 'DONE' || Number(paid.totalAmount) !== amount || paid.orderId !== orderId) {
+            throw new AppError(400, 'PAYMENT_MISMATCH', 'Payment confirmation did not match the order.');
+        }
+
+        const licenseKeys = Array.from({ length: selectedPlan.licenses }, () =>
+            `LICENSE-${crypto.randomBytes(12).toString('hex').toUpperCase()}`
+        );
+        const email = String(req.user.email).toLowerCase();
+        await transactionRef.set({
+            orderId,
+            paymentKeyHash: crypto.createHash('sha256').update(paymentKey).digest('hex'),
+            amount,
+            status: paid.status,
+            email,
+            plan: selectedPlan.plan,
+            licenseKeys,
+            approvedAt: paid.approvedAt || null,
+            createdAt: FieldValue.serverTimestamp()
+        });
+        await db.collection('users').doc(email).set({
+            email,
+            isPaid: true,
+            plan: selectedPlan.plan,
+            licenseKey: licenseKeys[0],
+            updatedAt: FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        res.json({ status: 'success', plan: selectedPlan.plan, keys: licenseKeys });
+    }));
+
+    app.use((req, _res, next) => next(new AppError(404, 'NOT_FOUND', 'Endpoint not found.')));
+    app.use((error, req, res, _next) => {
+        const status = error.status || (error.type === 'entity.too.large' ? 413 : 500);
+        const code = error.code || (status === 413 ? 'INPUT_TOO_LARGE' : 'INTERNAL_ERROR');
+        if (status >= 500) {
+            console.error(JSON.stringify({
+                event: 'request_error', requestId: req.id, code,
+                message: error.message, details: error.details || null
+            }));
+        }
+        res.status(status).json({
+            error: { code, message: status >= 500 && code === 'INTERNAL_ERROR' ? 'Unexpected server error.' : error.message },
+            requestId: req.id
+        });
+    });
+
+    return app;
+}
+
+if (require.main === module) {
+    createApp().listen(PORT, '0.0.0.0', () => {
+        console.log(JSON.stringify({ event: 'server_started', host: '0.0.0.0', port: PORT }));
+    });
+}
+
+module.exports = {
+    AppError,
+    TARGET_LANGUAGES,
+    buildTranscript,
+    createApp,
+    extractResponseText,
+    normalizeLanguage,
+    summarySchema
+};

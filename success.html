@@ -121,15 +121,29 @@
         </div>
     </div>
 
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
+    <script src="./config.js"></script>
     <script>
         const urlParams = new URLSearchParams(window.location.search);
         const paymentData = {
             paymentKey: urlParams.get('paymentKey'),
             orderId: urlParams.get('orderId'),
-            amount: urlParams.get('amount'),
+            amount: Number(urlParams.get('amount')),
         };
 
-        const BACKEND_URL = 'https://translator-backend-258115702573.asia-northeast3.run.app'; // Same as index3.html
+        const config = window.CONFERENCE_HELPER_CONFIG;
+        if (!firebase.apps.length) firebase.initializeApp(config.firebase);
+        const auth = firebase.auth();
+
+        function currentUser() {
+            return new Promise((resolve) => {
+                const unsubscribe = auth.onAuthStateChanged((user) => {
+                    unsubscribe();
+                    resolve(user);
+                });
+            });
+        }
 
         async function confirmPayment() {
             if (!paymentData.paymentKey) {
@@ -138,10 +152,18 @@
             }
 
             try {
-                // Call Cloud Run Backend
-                const response = await fetch(`${BACKEND_URL}/confirm-payment`, {
+                const user = await currentUser();
+                if (!user) {
+                    showError('결제를 진행한 Google 계정으로 다시 로그인해 주세요.');
+                    return;
+                }
+                const token = await user.getIdToken();
+                const response = await fetch(`${config.backendUrl}/confirm-payment`, {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Authorization': `Bearer ${token}`
+                    },
                     body: JSON.stringify(paymentData)
                 });
 
@@ -149,9 +171,9 @@
                 if (response.ok) {
                     document.getElementById('loading').style.display = 'none';
                     document.getElementById('result').style.display = 'block';
-                    document.getElementById('licenseKeyDisplay').innerText = Array.isArray(data.keys) ? data.keys.join('\n') : data.key;
-                    // Auto-save to localStorage so user is premium immediately
-                    localStorage.setItem('premium_license', data.key);
+                    const keys = Array.isArray(data.keys) ? data.keys : [];
+                    document.getElementById('licenseKeyDisplay').innerText = keys.join('\n');
+                    localStorage.setItem('premium_license', keys[0] || '');
                 } else {
                     showError(data.message || 'Verification failed');
                 }

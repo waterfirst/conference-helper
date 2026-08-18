@@ -1,1262 +1,220 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="ko">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Real-Time Interpreter | ScholarBridge</title>
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#0f0f1a">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <link rel="apple-touch-icon" href="icon-192.png">
-    <!-- Firebase SDKs -->
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+    <meta name="theme-color" content="#071311">
+    <meta name="description" content="WebRTC 기반 실시간 동시통역, 회의록 및 발표 요약">
+    <title>Conference Copilot · ScholarBridge</title>
+    <link rel="manifest" href="./manifest.json">
+    <link rel="icon" href="./logo.jpg">
+    <link rel="apple-touch-icon" href="./logo.jpg">
+    <link rel="preconnect" href="https://www.gstatic.com">
+    <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+    <div class="ambient ambient-a" aria-hidden="true"></div>
+    <div class="ambient ambient-b" aria-hidden="true"></div>
+
+    <header class="topbar">
+        <a class="brand" href="./" aria-label="Conference Copilot 홈">
+            <img src="./logo.jpg" alt="" class="brand-mark">
+            <span class="brand-copy">
+                <strong>Conference Copilot</strong>
+                <small>by ScholarBridge</small>
+            </span>
+        </a>
+        <div class="topbar-actions">
+            <span class="account-badge" id="accountBadge">연결 확인 중</span>
+            <button class="button button-quiet button-small" id="signOutButton" type="button" hidden>로그아웃</button>
+        </div>
+    </header>
+
+    <main class="shell">
+        <section class="hero">
+            <div>
+                <span class="eyebrow"><span class="live-dot"></span> AI LIVE INTERPRETATION</span>
+                <h1>듣는 순간 통역하고,<br><em>끝나는 순간 정리합니다.</em></h1>
+            </div>
+            <p>전문 통역용 음성 모델이 발표자의 억양과 문맥을 보존해 음성·자막을 함께 전달하고, 전체 기록을 회의록이나 발표 브리프로 바꿉니다.</p>
+        </section>
+
+        <section class="workspace-grid">
+            <article class="panel live-panel">
+                <div class="panel-header live-header">
+                    <div>
+                        <span class="section-kicker">LIVE STAGE</span>
+                        <h2 id="sessionHeading">새 컨퍼런스 세션</h2>
+                    </div>
+                    <div class="session-state" id="sessionState" data-state="idle">
+                        <span class="state-dot"></span>
+                        <span id="sessionStateText">준비됨</span>
+                    </div>
+                </div>
+
+                <div class="stage">
+                    <div class="stage-meta">
+                        <span id="engineBadge">AUTO ENGINE</span>
+                        <span id="elapsedTime">00:00:00</span>
+                    </div>
+                    <div class="caption-block source-caption">
+                        <span class="caption-label" id="sourceCaptionLabel">원문 · 자동 감지</span>
+                        <p id="sourceCaption">마이크 또는 브라우저 탭 음원을 선택한 뒤 시작하세요.</p>
+                    </div>
+                    <div class="caption-divider"><span></span></div>
+                    <div class="caption-block translated-caption">
+                        <span class="caption-label" id="translatedCaptionLabel">통역 · 한국어</span>
+                        <p id="translatedCaption">번역 자막이 여기에 표시됩니다.</p>
+                    </div>
+                    <div class="level-track" aria-label="마이크 입력 레벨">
+                        <span id="audioLevel"></span>
+                    </div>
+                </div>
+
+                <div class="primary-controls">
+                    <button class="button button-primary" id="startButton" type="button">
+                        <span class="control-icon">▶</span> 동시통역 시작
+                    </button>
+                    <button class="button button-danger" id="stopButton" type="button" hidden>
+                        <span class="control-icon">■</span> 세션 종료
+                    </button>
+                    <button class="button button-secondary" id="pauseAudioButton" type="button" disabled>
+                        번역 음성 끄기
+                    </button>
+                </div>
+
+                <div class="audio-controls">
+                    <label for="translatedVolume">통역 음성</label>
+                    <input id="translatedVolume" type="range" min="0" max="1" step="0.05" value="0.9">
+                    <span id="translatedVolumeValue">90%</span>
+                    <audio id="translatedAudio" autoplay></audio>
+                </div>
+
+                <div class="status-strip">
+                    <div><span>엔진</span><strong id="engineMetric">대기</strong></div>
+                    <div><span>기록</span><strong id="segmentMetric">0개</strong></div>
+                    <div><span>자동 저장</span><strong id="saveMetric">켜짐</strong></div>
+                </div>
+            </article>
+
+            <aside class="panel setup-panel">
+                <div class="panel-header">
+                    <div>
+                        <span class="section-kicker">SESSION SETUP</span>
+                        <h2>통역 설정</h2>
+                    </div>
+                </div>
+
+                <label class="field">
+                    <span>세션 제목</span>
+                    <input id="sessionTitle" type="text" maxlength="160" placeholder="예: OLED 수명 기술 검토">
+                </label>
+
+                <div class="mode-switch" role="group" aria-label="요약 유형">
+                    <button type="button" class="mode-option active" data-mode="meeting">회의</button>
+                    <button type="button" class="mode-option" data-mode="presentation">발표</button>
+                </div>
+
+                <div class="field-grid">
+                    <label class="field">
+                        <span>입력 음원</span>
+                        <select id="audioSource">
+                            <option value="microphone">마이크</option>
+                            <option value="tab">브라우저 탭</option>
+                        </select>
+                    </label>
+                    <label class="field">
+                        <span>마이크</span>
+                        <select id="microphoneSelect">
+                            <option value="">기본 마이크</option>
+                        </select>
+                    </label>
+                </div>
+
+                <div class="language-flow">
+                    <label class="field">
+                        <span>발화 언어</span>
+                        <select id="sourceLanguage"></select>
+                    </label>
+                    <span class="flow-arrow" aria-hidden="true">→</span>
+                    <label class="field">
+                        <span>통역 언어</span>
+                        <select id="targetLanguage"></select>
+                    </label>
+                </div>
+
+                <label class="field">
+                    <span>전문용어 사전 <small>폴백 번역·요약에 반영</small></span>
+                    <textarea id="glossary" rows="4" maxlength="2000" placeholder="예: LTPO, Vth, negative bias temperature stress"></textarea>
+                </label>
+
+                <div class="quality-note">
+                    <span class="quality-icon">✦</span>
+                    <p><strong>품질 팁</strong> 발표자와 가까운 마이크를 사용하고, 고유명사·약어는 전문용어 사전에 쉼표로 구분해 입력하세요.</p>
+                </div>
+            </aside>
+        </section>
+
+        <section class="content-grid">
+            <article class="panel transcript-panel">
+                <div class="panel-header">
+                    <div>
+                        <span class="section-kicker">TRANSCRIPT</span>
+                        <h2>실시간 기록</h2>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="button button-quiet button-small" id="exportTranscriptButton" type="button">Markdown 저장</button>
+                        <button class="button button-quiet button-small danger-text" id="clearTranscriptButton" type="button">비우기</button>
+                    </div>
+                </div>
+                <div class="transcript-list empty-state" id="transcriptList">
+                    <div class="empty-illustration">⌁</div>
+                    <strong>아직 기록이 없습니다</strong>
+                    <p>동시통역을 시작하면 원문과 번역이 시간순으로 쌓입니다.</p>
+                </div>
+            </article>
+
+            <article class="panel summary-panel">
+                <div class="panel-header">
+                    <div>
+                        <span class="section-kicker">AI NOTES</span>
+                        <h2 id="summaryPanelTitle">회의록</h2>
+                    </div>
+                    <div class="panel-actions">
+                        <button class="button button-secondary button-small" id="generateSummaryButton" type="button">AI 회의록 생성</button>
+                        <button class="button button-quiet button-small" id="exportSummaryButton" type="button" disabled>저장</button>
+                    </div>
+                </div>
+                <div class="summary-content empty-state" id="summaryContent">
+                    <div class="empty-illustration">✦</div>
+                    <strong>기록을 구조화된 결과로</strong>
+                    <p>핵심 요약, 결정사항, 액션 아이템, 미해결 질문을 자동으로 정리합니다.</p>
+                </div>
+            </article>
+        </section>
+
+        <footer class="footer">
+            <p>녹음 파일은 서버에 저장하지 않습니다. 전사 텍스트는 이 브라우저에 자동 저장되며 언제든 삭제할 수 있습니다.</p>
+            <span>Conference Copilot 2.0</span>
+        </footer>
+    </main>
+
+    <div class="modal" id="loginModal" role="dialog" aria-modal="true" aria-labelledby="loginTitle" hidden>
+        <div class="modal-card">
+            <img src="./logo.jpg" alt="" class="modal-logo">
+            <span class="eyebrow">SECURE ACCESS</span>
+            <h2 id="loginTitle">통역 세션을 시작할 준비가 됐습니다</h2>
+            <p>API 키를 노출하지 않고 사용량과 라이선스를 보호하기 위해 Google 계정으로 로그인합니다.</p>
+            <button class="button button-primary" id="loginButton" type="button">Google로 계속하기</button>
+            <small>팝업이 차단되면 브라우저 설정에서 이 사이트의 팝업을 허용하세요.</small>
+        </div>
+    </div>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-app-compat.js"></script>
     <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-auth-compat.js"></script>
-    <script src="https://www.gstatic.com/firebasejs/9.22.0/firebase-firestore-compat.js"></script>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: linear-gradient(135deg, #0f0f1a 0%, #1a1a2e 100%);
-            min-height: 100vh;
-            color: #fff;
-            padding: 10px;
-            padding-bottom: env(safe-area-inset-bottom);
-        }
-
-        .container {
-            max-width: 600px;
-            margin: 0 auto;
-        }
-
-        .header {
-            text-align: center;
-            padding: 15px 0;
-            margin-bottom: 15px;
-        }
-
-        .header h1 {
-            font-size: 1.5em;
-            background: linear-gradient(90deg, #00d9ff, #00ff88);
-            -webkit-background-clip: text;
-            -webkit-text-fill-color: transparent;
-            margin-bottom: 5px;
-        }
-
-        .header p {
-            font-size: 0.85em;
-            color: #888;
-        }
-
-        .card {
-            background: rgba(255, 255, 255, 0.08);
-            border-radius: 16px;
-            padding: 15px;
-            margin-bottom: 12px;
-            backdrop-filter: blur(10px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-        }
-
-        .card-title {
-            font-size: 0.9em;
-            color: #00d9ff;
-            margin-bottom: 12px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .lang-settings {
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-        }
-
-        .lang-row {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .lang-label {
-            font-size: 0.85em;
-            color: #aaa;
-            min-width: 80px;
-        }
-
-        select {
-            flex: 1;
-            padding: 10px 12px;
-            border-radius: 10px;
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            background: rgba(0, 0, 0, 0.3);
-            color: #fff;
-            font-size: 0.95em;
-            cursor: pointer;
-        }
-
-        select option {
-            background: #1a1a2e;
-            color: #fff;
-        }
-
-        .video-wrapper {
-            position: relative;
-            width: 100%;
-            border-radius: 12px;
-            overflow: hidden;
-            background: #000;
-            min-height: 200px;
-        }
-
-        #videoElement {
-            width: 100%;
-            display: block;
-        }
-
-        .subtitle-container {
-            position: absolute;
-            bottom: 15px;
-            left: 50%;
-            transform: translateX(-50%);
-            width: 94%;
-            text-align: center;
-        }
-
-        .subtitle-text {
-            display: inline-block;
-            padding: 12px 20px;
-            background: rgba(0, 0, 0, 0.85);
-            border-radius: 8px;
-            font-size: 1.2em;
-            line-height: 1.5;
-            max-width: 100%;
-            word-break: keep-all;
-            text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.8);
-        }
-
-        .subtitle-text.interim {
-            color: #aaa;
-            font-style: italic;
-        }
-
-        .subtitle-text.final {
-            color: #fff;
-        }
-
-        .subtitle-text.empty {
-            color: #888;
-            font-size: 1em;
-            background: rgba(0, 0, 0, 0.6);
-        }
-
-        .status-bar {
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 12px;
-            padding: 10px;
-            margin-bottom: 10px;
-        }
-
-        /* 볼륨 미터 스타일 추가 */
-        .volume-meter {
-            width: 100px;
-            height: 8px;
-            background: rgba(255, 255, 255, 0.1);
-            border-radius: 4px;
-            overflow: hidden;
-            position: relative;
-        }
-
-        .volume-meter-fill {
-            height: 100%;
-            width: 0%;
-            background: linear-gradient(90deg, #00ff88, #00d9ff);
-            transition: width 0.1s ease;
-        }
-
-        .status-dot {
-            width: 10px;
-            height: 10px;
-            border-radius: 50%;
-            background: #ff4757;
-        }
-
-        .status-dot.active {
-            background: #00ff88;
-            animation: pulse 1.5s infinite;
-        }
-
-        @keyframes pulse {
-
-            0%,
-            100% {
-                box-shadow: 0 0 0 0 rgba(0, 255, 136, 0.5);
-            }
-
-            50% {
-                box-shadow: 0 0 0 8px rgba(0, 255, 136, 0);
-            }
-        }
-
-        .status-text {
-            font-size: 0.85em;
-            color: #888;
-        }
-
-        .btn-group {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 15px;
-        }
-
-        .btn {
-            padding: 16px 20px;
-            border: none;
-            border-radius: 12px;
-            font-size: 1em;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #00d9ff, #00ff88);
-            color: #0f0f1a;
-            grid-column: span 2;
-        }
-
-        .btn-stop {
-            background: linear-gradient(135deg, #ff6b6b, #ff8e53);
-            color: #fff;
-            grid-column: span 2;
-        }
-
-        .btn-secondary {
-            background: rgba(255, 255, 255, 0.15);
-            color: #fff;
-        }
-
-        .btn-capture {
-            background: linear-gradient(135deg, #a855f7, #ec4899);
-            color: #fff;
-        }
-
-        .btn:active {
-            transform: scale(0.98);
-        }
-
-        .btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .transcript-box {
-            background: rgba(0, 0, 0, 0.3);
-            border-radius: 12px;
-            padding: 15px;
-            max-height: 250px;
-            overflow-y: auto;
-            font-size: 0.9em;
-        }
-
-        .transcript-box:empty::before {
-            content: '음성인식을 시작하면 번역 기록이 표시됩니다...';
-            color: #555;
-        }
-
-        .transcript-item {
-            padding: 12px;
-            margin-bottom: 10px;
-            background: rgba(255, 255, 255, 0.05);
-            border-radius: 10px;
-            border-left: 3px solid #00d9ff;
-        }
-
-        .transcript-time {
-            font-size: 0.75em;
-            color: #666;
-            margin-bottom: 6px;
-        }
-
-        .transcript-original {
-            color: #aaa;
-            font-size: 0.85em;
-            margin-bottom: 4px;
-        }
-
-        .transcript-translated {
-            color: #fff;
-            font-size: 1em;
-            line-height: 1.5;
-        }
-
-        .toast {
-            position: fixed;
-            bottom: 80px;
-            left: 50%;
-            transform: translateX(-50%) translateY(100px);
-            padding: 12px 24px;
-            background: rgba(0, 255, 136, 0.9);
-            color: #0f0f1a;
-            border-radius: 25px;
-            font-size: 0.9em;
-            font-weight: 600;
-            transition: transform 0.3s ease;
-            z-index: 1000;
-            white-space: nowrap;
-        }
-
-        .toast.show {
-            transform: translateX(-50%) translateY(0);
-        }
-
-        .warning {
-            background: rgba(255, 107, 107, 0.2);
-            border: 1px solid rgba(255, 107, 107, 0.5);
-            border-radius: 10px;
-            padding: 12px;
-            margin-bottom: 12px;
-            font-size: 0.85em;
-            display: none;
-        }
-
-        .warning.show {
-            display: block;
-        }
-
-        .transcript-box::-webkit-scrollbar {
-            width: 4px;
-        }
-
-        .transcript-box::-webkit-scrollbar-track {
-            background: transparent;
-        }
-
-        .transcript-box::-webkit-scrollbar-thumb {
-            background: rgba(255, 255, 255, 0.2);
-            border-radius: 2px;
-        }
-
-        .camera-toggle {
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            margin-top: 10px;
-            padding: 10px;
-            background: rgba(0, 0, 0, 0.2);
-            border-radius: 8px;
-        }
-
-        .camera-toggle label {
-            font-size: 0.85em;
-            color: #aaa;
-        }
-
-        .toggle-switch {
-            position: relative;
-            width: 50px;
-            height: 26px;
-        }
-
-        .toggle-switch input {
-            opacity: 0;
-            width: 0;
-            height: 0;
-        }
-
-        .slider {
-            position: absolute;
-            cursor: pointer;
-            top: 0;
-            left: 0;
-            right: 0;
-            bottom: 0;
-            background-color: #333;
-            transition: .3s;
-            border-radius: 26px;
-        }
-
-        .slider:before {
-            position: absolute;
-            content: "";
-            height: 20px;
-            width: 20px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .3s;
-            border-radius: 50%;
-        }
-
-        input:checked+.slider {
-            background: linear-gradient(135deg, #00d9ff, #00ff88);
-        }
-
-        input:checked+.slider:before {
-            transform: translateX(24px);
-        }
-
-        .gallery-section {
-            margin-top: 15px;
-        }
-
-        .gallery-title {
-            font-size: 0.85em;
-            color: #888;
-            margin-bottom: 10px;
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }
-
-        .gallery-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 8px;
-        }
-
-        .gallery-item {
-            position: relative;
-            aspect-ratio: 16/9;
-            border-radius: 8px;
-            overflow: hidden;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-
-        .gallery-item:hover {
-            transform: scale(1.02);
-        }
-
-        .gallery-item img {
-            width: 100%;
-            height: 100%;
-            object-fit: cover;
-        }
-
-        .gallery-item .delete-btn {
-            position: absolute;
-            top: 4px;
-            right: 4px;
-            width: 24px;
-            height: 24px;
-            background: rgba(255, 0, 0, 0.8);
-            border: none;
-            border-radius: 50%;
-            color: white;
-            font-size: 14px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            opacity: 0;
-            transition: opacity 0.2s;
-        }
-
-        .gallery-item:hover .delete-btn {
-            opacity: 1;
-        }
-
-        .gallery-empty {
-            grid-column: span 3;
-            text-align: center;
-            padding: 30px;
-            color: #555;
-            font-size: 0.85em;
-        }
-
-        .modal {
-            display: none;
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(0, 0, 0, 0.95);
-            z-index: 2000;
-            align-items: center;
-            justify-content: center;
-            flex-direction: column;
-            padding: 20px;
-        }
-
-        .modal.show {
-            display: flex;
-        }
-
-        .modal img {
-            max-width: 100%;
-            max-height: 70vh;
-            border-radius: 8px;
-        }
-
-        .modal-buttons {
-            display: flex;
-            gap: 15px;
-            margin-top: 20px;
-        }
-
-        .modal-btn {
-            padding: 12px 24px;
-            border: none;
-            border-radius: 25px;
-            font-size: 1em;
-            cursor: pointer;
-            transition: transform 0.2s;
-        }
-
-        .modal-btn:active {
-            transform: scale(0.95);
-        }
-
-        .modal-btn.download {
-            background: #00ff88;
-            color: #0f0f1a;
-        }
-
-        .modal-btn.close {
-            background: rgba(255, 255, 255, 0.2);
-            color: #fff;
-        }
-
-        #captureCanvas {
-            display: none;
-        }
-
-        @media (min-width: 768px) {
-            .container {
-                max-width: 700px;
-            }
-
-            .subtitle-text {
-                font-size: 1.6em;
-            }
-        }
-    </style>
-</head>
-
-<body>
-    <div class="container">
-        <div class="header">
-            <div style="display: flex; align-items: center; justify-content: center; gap: 15px; margin-bottom: 5px;">
-                <img src="logo.jpg" alt="ScholarBridge Logo"
-                    onclick="handleLogoClick()"
-                    style="height: 50px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.3); cursor: pointer;">
-                <h1 style="margin: 0;">Real-Time Interpreter</h1>
-            </div>
-            <p>Developed by <strong>ScholarBridge</strong></p>
-            <p style="font-size: 0.75em; color: #666; margin-top: 5px;">Sinbong 2-ro, Suji-gu, Yongin-si, Gyeonggi-do
-            </p>
-            <div id="user-info" style="display: none; margin-top: 10px;">
-                <span id="user-email" style="color: #00ff88; font-size: 0.8em; margin-right: 10px;"></span>
-                <span id="statusBadge"
-                    style="color: #ffaa00; font-size: 0.8em; margin-right: 10px; font-weight: bold;"></span>
-                <button onclick="logout()"
-                    style="background:none; border:1px solid #555; color:#aaa; padding:2px 8px; border-radius:4px; font-size:0.75em; cursor:pointer;">Logout</button>
-            </div>
-        </div>
-        <div class="warning" id="warning">⚠️ Please use Chrome or Edge browser.</div>
-        <div class="card">
-            <div class="card-title">🌐 Language Settings</div>
-            <div class="lang-settings">
-                <div class="lang-row">
-                    <span class="lang-label">Recognition</span>
-                    <select id="recognitionLang">
-                        <option value="en-US" selected>🇺🇸 English</option>
-                        <option value="ko-KR">🇰🇷 한국어</option>
-                        <option value="ja-JP">🇯🇵 日本語</option>
-                        <option value="zh-CN">🇨🇳 中文</option>
-                        <option value="id-ID">🇮🇩 Bahasa Indonesia</option>
-                        <option value="vi-VN">🇻🇳 Tiếng Việt</option>
-                        <option value="th-TH">🇹🇭 ไทย</option>
-                        <option value="de-DE">🇩🇪 Deutsch</option>
-                        <option value="fr-FR">🇫🇷 Français</option>
-                        <option value="es-ES">🇪🇸 Español</option>
-                        <option value="ru-RU">🇷🇺 Русский</option>
-                        <option value="it-IT">🇮🇹 Italiano</option>
-                        <option value="pt-PT">🇵🇹 Português</option>
-                    </select>
-                </div>
-                <div class="lang-row">
-                    <span class="lang-label">Translation</span>
-                    <select id="translateLang">
-                        <option value="ko" selected>🇰🇷 한국어</option>
-                        <option value="en">🇺🇸 English</option>
-                        <option value="ja">🇯🇵 日本語</option>
-                        <option value="zh">🇨🇳 中文</option>
-                        <option value="id">🇮🇩 Bahasa Indonesia</option>
-                        <option value="vi">��🇳 Tiếng Việt</option>
-                        <option value="th">🇹🇭 ไทย</option>
-                        <option value="de">🇩🇪 Deutsch</option>
-                        <option value="fr">🇫🇷 Français</option>
-                        <option value="es">🇪🇸 Español</option>
-                        <option value="ru">🇷🇺 Русский</option>
-                        <option value="it">🇮🇹 Italiano</option>
-                        <option value="pt">🇵🇹 Português</option>
-                    </select>
-                </div>
-                <!-- 마이크 설정 추가 -->
-                <div class="lang-row">
-                    <span class="lang-label">🎙️ Microphone</span>
-                    <select id="micSelect" style="flex:1;"></select>
-                    <button onclick="getMicrophones()"
-                        style="padding: 5px 10px; border-radius: 5px; background: #333; color: white; border: 1px solid #555; cursor: pointer;">🔄</button>
-                </div>
-                <div class="camera-toggle">
-                    <label>📷 Camera</label>
-                    <label class="toggle-switch"><input type="checkbox" id="cameraToggle" checked><span
-                            class="slider"></span></label>
-                    <select id="cameraFacing" style="flex:1; margin-left:10px;">
-                        <option value="environment">Back Camera</option>
-                        <option value="user">Front Camera</option>
-                    </select>
-                </div>
-            </div>
-        </div>
-        <div class="card">
-            <div class="card-title">📺 Live Subtitles</div>
-            <div class="status-bar">
-                <div class="status-dot" id="statusDot"></div>
-                <span class="status-text" id="statusText">Ready</span>
-                <!-- 볼륨 미터 추가 -->
-                <div class="volume-meter" title="Microphone Input Level">
-                    <div id="volumeMeterFill" class="volume-meter-fill"></div>
-                </div>
-            </div>
-            <div class="video-wrapper" id="videoWrapper">
-                <video id="videoElement" autoplay playsinline></video>
-                <div class="subtitle-container">
-                    <div class="subtitle-text empty" id="subtitleText">Press Start button</div>
-                </div>
-            </div>
-            <div class="btn-group">
-                <button class="btn btn-primary" id="startBtn" onclick="startAll()">▶️ Start</button>
-                <button class="btn btn-stop" id="stopBtn" onclick="stopAll()" style="display: none;">⏹️ Stop</button>
-                <button class="btn btn-capture" onclick="captureWithSubtitle()">📸 Capture</button>
-                <button class="btn btn-secondary" onclick="saveTranscript()">💾 Save Log</button>
-            </div>
-            <div class="gallery-section">
-                <div class="gallery-title">🖼️ Captured Images (<span id="captureCount">0</span>)</div>
-                <div class="gallery-grid" id="galleryGrid">
-                    <div class="gallery-empty">No captures yet</div>
-                </div>
-            </div>
-        </div>
-
-        <div class="card">
-            <div class="card-title">💎 License Plan</div>
-            <div class="btn-group" style="grid-template-columns: 1fr; gap: 10px;">
-                <button class="btn btn-primary" onclick="requestPayment(100000, '개인 라이선스')">
-                    👤 Personal License (100,000 KRW)
-                </button>
-                <button class="btn btn-capture" onclick="requestPayment(700000, '연구실 단체 패키지')">
-                    👨‍🔬 Lab Package (700,000 KRW / 10 Users)
-                </button>
-            </div>
-            <p style="font-size: 0.75em; color: #888; margin-top: 10px; text-align: center;">
-                * 10 unique license keys will be verified immediately upon purchase.
-            </p>
-        </div>
-
-        <div class="card">
-            <div class="card-title">📝 Translation Log</div>
-            <div class="transcript-box" id="transcriptBox"></div>
-            <div class="btn-group" style="margin-top:10px;">
-                <button class="btn btn-secondary" onclick="clearTranscript()">🗑️ Clear Log</button>
-                <button class="btn btn-secondary" onclick="clearGallery()">🗑️ Clear Images</button>
-            </div>
-        </div>
-    </div>
-    </div>
-    <div class="toast" id="toast"></div>
-
-    <!-- Login Modal -->
-    <div class="modal" id="loginModal">
-        <div class="card" style="width: 90%; max-width: 400px; background: rgba(15, 15, 26, 0.95);">
-            <div class="card-title">🔐 Login Required</div>
-            <p style="color: #ccc; margin-bottom: 20px; font-size: 0.9em;">
-                This service requires a valid license. Please login to continue.
-            </p>
-            <button class="btn btn-primary" onclick="loginWithGoogle()" style="width: 100%;">
-                Login with Google
-            </button>
-        </div>
-    </div>
-    <div class="modal" id="imageModal">
-        <img id="modalImage" src="" alt="Captured image">
-        <div class="modal-buttons">
-            <button class="modal-btn download" onclick="downloadModalImage()">💾 Download</button>
-            <button class="modal-btn close" onclick="closeModal()">✕ Close</button>
-        </div>
-    </div>
-    <canvas id="captureCanvas"></canvas>
-
-    <!-- Toss Payments SDK -->
-    <script src="https://js.tosspayments.com/v1/payment"></script>
-
-    <script>
-        // --- LICENSE & PAYMENT SETUP ---
-        let trialChars = 0;
-        let trialStartTime = null;
-        const MAX_TRIAL_CHARS = 20000; // 2만 자로 증량
-        const MAX_TRIAL_MS = 60 * 60 * 1000; // 60분 (1시간)
-        let isPremium = false;
-        let isAdmin = false; // 관리자 여부 추가
-
-        // Toss Payments Client Key (Test)
-        const clientKey = 'test_ck_D5bZzMqlcwBa29KGRJg8W480u0J9';
-        const tossPayments = TossPayments(clientKey);
-
-        let recognition = null, isRecognizing = false, videoStream = null, capturedImages = [], currentModalImage = null;
-        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-        if (!SpeechRecognition) document.getElementById('warning').classList.add('show');
-
-        function showToast(msg) { const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2500); }
-        function getTimeString() { return new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' }); }
-        function getDateTimeString() { return new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-'); }
-
-        // --- CONFIGURATION ---
-        const BACKEND_URL = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') 
-            ? 'http://127.0.0.1:8090' 
-            : 'https://translator-backend-258115702573.asia-northeast3.run.app';
-        const firebaseConfig = {
-            apiKey: "AIzaSyBkR6Tu6dDyAArQf2mrs7Tb7h97pfjjCFs",
-            authDomain: "internation-conference-helper.firebaseapp.com",
-            projectId: "internation-conference-helper",
-            storageBucket: "internation-conference-helper.firebasestorage.app",
-            messagingSenderId: "258115702573",
-            appId: "1:258115702573:web:96731227a9dae2445e4da4",
-            measurementId: "G-6E1XKPCN6T"
-        };
-
-        // 1. Firebase 초기화
-        if (!firebase.apps.length) {
-            firebase.initializeApp(firebaseConfig);
-        }
-        // [중요] 데이터베이스 ID 'user'를 명시적으로 호출합니다.
-        const db = firebase.app().firestore('user');
-        const auth = firebase.auth();
-        let currentUser = null;
-
-        // 2. 권한 체크 로직 (구조: users 컬렉션 -> 이메일 문서)
-        async function checkAccess(user) {
-            // 관리자 이메일 체크
-            const admins = ['tearim07@gmail.com', 'nakcho.choi@gmail.com'];
-            if (admins.includes(user.email)) {
-                isAdmin = true;
-                const badge = document.getElementById('statusBadge');
-                badge.textContent = "시스템 관리자 (무제한)";
-                badge.style.color = "#00d9ff";
-                return;
-            }
-
-            const userRef = db.collection('users').doc(user.email);
-            const doc = await userRef.get();
-            const badge = document.getElementById('statusBadge');
-            const now = new Date();
-
-            if (!doc.exists) {
-                // 신규 유저는 자동으로 'users' 컬렉션에 이메일 문서가 생성되며 5일 체험 시작
-                await userRef.set({
-                    trialStartDate: firebase.firestore.FieldValue.serverTimestamp(),
-                    isPaid: false,
-                    email: user.email
-                });
-                badge.textContent = "5일 무료 체험 시작";
-                isPremium = false;
-            } else {
-                const data = doc.data();
-                if (data.isPaid === true) {
-                    badge.textContent = "프리미엄 멤버 (무제한)";
-                    badge.style.color = "#00ff88";
-                    isPremium = true;
-                } else {
-                    const startDate = data.trialStartDate.toDate();
-                    const diffDays = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
-                    if (diffDays > 5) {
-                        badge.textContent = "체험 만료";
-                        badge.style.color = "#ff4444";
-                        isPremium = false;
-                        alert("체험 기간이 만료되었습니다. 관리자에게 문의하세요.");
-                        document.getElementById('startBtn').disabled = true;
-                    } else {
-                        badge.textContent = `${6 - diffDays}일 남음`;
-                        isPremium = false;
-                    }
-                }
-            }
-        }
-
-        auth.onAuthStateChanged(async (user) => {
-            currentUser = user;
-            if (user) {
-                document.getElementById('user-email').textContent = user.email;
-                document.getElementById('user-info').style.display = 'block';
-                document.getElementById('loginModal').classList.remove('show');
-                showToast('✅ Logged in: ' + user.email);
-                await checkAccess(user);
-            } else {
-                document.getElementById('user-info').style.display = 'none';
-                document.getElementById('loginModal').classList.add('show');
-            }
-        });
-
-        function loginWithGoogle() {
-            console.log("Attempting Google Login...");
-            const provider = new firebase.auth.GoogleAuthProvider();
-            firebase.auth().signInWithPopup(provider)
-                .then((result) => {
-                    console.log("Login Success:", result.user.email);
-                })
-                .catch((e) => {
-                    console.error("Login Error:", e);
-                    alert("로그인 오류: " + e.message + "\n\n(팝업이 차단되었거나, Firebase 콘솔에서 도메인 승인이 필요할 수 있습니다.)");
-                });
-        }
-
-        function logout() {
-            firebase.auth().signOut();
-        }
-
-        async function translateText(text, targetLang, sourceLang = 'en-US') {
-            const isLocal = (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1');
-            if (!currentUser && !isLocal) return text;
-            if (!text) return text;
-            try {
-                let token = 'local-bypass-token';
-                if (currentUser) {
-                    token = await currentUser.getIdToken();
-                }
-                
-                // 언어 코드가 'en-US' 같은 형태일 경우 'en'으로 잘라서 보냄 (백엔드 호환성)
-                const targetCode = targetLang.split('-')[0];
-                const sourceCode = sourceLang.split('-')[0];
-
-                const response = await fetch(`${BACKEND_URL}/translate`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                        'Authorization': `Bearer ${token}`
-                    },
-                    body: JSON.stringify({ text, targetLang: targetCode, sourceLang: sourceCode })
-                });
-
-                if (!response.ok) {
-                    if (response.status === 403) {
-                        showToast('⚠️ License Expired or Access Denied');
-                    } else {
-                        const errText = await response.text();
-                        console.error('Translation Server Error:', errText);
-                        showToast('⚠️ Translation error: ' + response.status);
-                    }
-                    return text;
-                }
-
-                const data = await response.json();
-                const translated = data.translatedText || text;
-                
-                // [디버그] 번역이 원문과 동일하게 왔을 경우 경고 표시 (API 설정 문제 가능성)
-                if (translated === text && text.length > 2) {
-                    console.warn(`[Echo detected] Backend returned original text for: "${text}"`);
-                    if (data.warning) console.warn("Backend warning:", data.warning);
-                }
-                
-                return translated;
-            } catch (e) {
-                console.error('Translation Request Failed:', e);
-                showToast('⚠️ Translation service unreachable');
-                return text;
-            }
-        }
-
-        async function getMicrophones() {
-            try {
-                // 권한 먼저 요청
-                await navigator.mediaDevices.getUserMedia({ audio: true });
-                const devices = await navigator.mediaDevices.enumerateDevices();
-                const micSelect = document.getElementById('micSelect');
-                micSelect.innerHTML = '';
-
-                const audioInputs = devices.filter(device => device.kind === 'audioinput');
-                audioInputs.forEach(device => {
-                    const option = document.createElement('option');
-                    option.value = device.deviceId;
-                    option.text = device.label || `Microphone ${micSelect.length + 1}`;
-                    micSelect.appendChild(option);
-                });
-                showToast('🎙️ Microphones detected');
-            } catch (e) {
-                console.error('Mic Detection Error:', e);
-                showToast('⚠️ Could not detect microphones');
-            }
-        }
-        // 초기 로드 시 마이크 목록 가져오기
-        window.addEventListener('load', getMicrophones);
-
-        async function startCamera() {
-            if (!document.getElementById('cameraToggle').checked) { document.getElementById('videoWrapper').style.minHeight = '100px'; return true; }
-            try {
-                const facingMode = document.getElementById('cameraFacing').value;
-                videoStream = await navigator.mediaDevices.getUserMedia({ video: { facingMode, width: 1280, height: 720 }, audio: false });
-                document.getElementById('videoElement').srcObject = videoStream;
-                document.getElementById('videoWrapper').style.minHeight = '200px';
-                return true;
-            } catch (e) { showToast('Camera permission required'); return true; }
-        }
-
-        function stopCamera() { if (videoStream) { videoStream.getTracks().forEach(t => t.stop()); videoStream = null; document.getElementById('videoElement').srcObject = null; } }
-
-        function captureWithSubtitle() {
-            const video = document.getElementById('videoElement');
-            const subtitleEl = document.getElementById('subtitleText');
-            const canvas = document.getElementById('captureCanvas');
-            const ctx = canvas.getContext('2d');
-            if (!videoStream || video.videoWidth === 0) { showToast('Please start camera first'); return; }
-            canvas.width = video.videoWidth; canvas.height = video.videoHeight;
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const subtitleText = subtitleEl.textContent;
-            if (subtitleText && subtitleText !== 'Press Start button' && subtitleText !== 'Waiting for speech...') {
-                const fontSize = Math.max(24, canvas.width / 25);
-                ctx.font = `bold ${fontSize}px -apple-system, BlinkMacSystemFont, sans-serif`;
-                const maxWidth = canvas.width * 0.9;
-                let lines = [], currentLine = '';
-                for (let char of subtitleText) {
-                    const testLine = currentLine + char;
-                    if (ctx.measureText(testLine).width > maxWidth && currentLine !== '') { lines.push(currentLine); currentLine = char; }
-                    else currentLine = testLine;
-                }
-                lines.push(currentLine);
-                const lineHeight = fontSize * 1.4, padding = 20;
-                const boxHeight = lines.length * lineHeight + padding * 2;
-                const boxY = canvas.height - boxHeight - 30;
-                ctx.fillStyle = 'rgba(0, 0, 0, 0.85)';
-                ctx.beginPath(); ctx.roundRect(canvas.width * 0.03, boxY, canvas.width * 0.94, boxHeight, 12); ctx.fill();
-                ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-                lines.forEach((line, i) => ctx.fillText(line, canvas.width / 2, boxY + padding + (i + 0.5) * lineHeight));
-                ctx.font = `${fontSize * 0.5}px -apple-system, sans-serif`;
-                ctx.fillStyle = 'rgba(255, 255, 255, 0.7)'; ctx.textAlign = 'right';
-                ctx.fillText(getTimeString(), canvas.width - 20, 30);
-            }
-            const imageData = canvas.toDataURL('image/png');
-            capturedImages.push({ id: Date.now(), image: imageData, subtitle: subtitleText, time: getTimeString() });
-            updateGallery();
-            showToast('📸 Captured with subtitle!');
-        }
-
-        function updateGallery() {
-            const gallery = document.getElementById('galleryGrid');
-            document.getElementById('captureCount').textContent = capturedImages.length;
-            if (capturedImages.length === 0) { gallery.innerHTML = '<div class="gallery-empty">No captures yet</div>'; return; }
-            gallery.innerHTML = capturedImages.map((item, i) => `<div class="gallery-item" onclick="openModal(${i})"><img src="${item.image}" alt="Capture ${i + 1}"><button class="delete-btn" onclick="event.stopPropagation(); deleteCapture(${i})">×</button></div>`).join('');
-        }
-
-        function openModal(i) { currentModalImage = capturedImages[i]; document.getElementById('modalImage').src = currentModalImage.image; document.getElementById('imageModal').classList.add('show'); }
-        function closeModal() { document.getElementById('imageModal').classList.remove('show'); currentModalImage = null; }
-        function downloadModalImage() {
-            if (!currentModalImage) return;
-            const a = document.createElement('a'); a.download = `conference_capture_${getDateTimeString()}.png`; a.href = currentModalImage.image;
-            document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            showToast('💾 Image downloaded!');
-        }
-        function deleteCapture(i) { capturedImages.splice(i, 1); updateGallery(); showToast('🗑️ Deleted'); }
-        function clearGallery() { if (capturedImages.length === 0) { showToast('No images to clear'); return; } if (confirm('Delete all captured images?')) { capturedImages = []; updateGallery(); showToast('🗑️ All images cleared'); } }
-
-        function requestPayment(amount, orderName) {
-            if (!tossPayments) return showToast('Payment system loading...');
-            if (!currentUser && amount === 100000) {
-                alert('Please login first to link the license to your account.');
-                loginWithGoogle();
-                return;
-            }
-            const emailEncoded = currentUser ? btoa(currentUser.email).replace(/=/g, '') : 'anon';
-            // Order ID format: ORDER-EMAIL-TIMESTAMP
-            const orderId = `ORDER-${emailEncoded}-${Date.now()}`;
-
-            tossPayments.requestPayment('카드', {
-                amount: amount,
-                orderId: orderId,
-                orderName: orderName,
-                customerName: currentUser ? currentUser.email : 'Guest',
-                successUrl: window.location.origin + '/conference-helper/success.html', // Fixed for GitHub Pages path
-                failUrl: window.location.origin + '/conference-helper/index.html',
-            });
-        }
-
-        let silenceTimer = null;
-        let lastInterim = '';
-
-        function initSpeechRecognition() {
-            if (!SpeechRecognition) return null;
-            const recognition = new SpeechRecognition();
-            recognition.continuous = true;
-            recognition.interimResults = true;
-            recognition.maxAlternatives = 1; // 단일 정확도 집중
-            recognition.lang = document.getElementById('recognitionLang').value;
-
-            recognition.onstart = () => {
-                isRecognizing = true;
-                document.getElementById('statusDot').classList.add('active');
-                document.getElementById('statusText').textContent = 'Listening...';
-                document.getElementById('startBtn').style.display = 'none';
-                document.getElementById('stopBtn').style.display = 'flex';
-            };
-
-            recognition.onend = () => {
-                if (isRecognizing) {
-                    console.log("Recognition ended unexpectedly. Restarting...");
-                    try { recognition.start(); } catch (e) { }
-                } else {
-                    document.getElementById('statusDot').classList.remove('active');
-                    document.getElementById('statusText').textContent = 'Ready';
-                    document.getElementById('startBtn').style.display = 'flex';
-                    document.getElementById('stopBtn').style.display = 'none';
-                }
-            };
-
-            recognition.onerror = (e) => {
-                console.error("Speech Recognition Error:", e.error);
-                if (e.error === 'not-allowed') showToast('Microphone permission required');
-                if (e.error === 'network') showToast('Network connection issue');
-            };
-
-            recognition.onresult = async (e) => {
-                const subtitleEl = document.getElementById('subtitleText');
-                let interim = '', final = '';
-
-                for (let i = e.resultIndex; i < e.results.length; i++) {
-                    if (e.results[i].isFinal) final += e.results[i][0].transcript;
-                    else interim += e.results[i][0].transcript;
-                }
-
-                // 침묵 감지용 타이머 초기화 (감도 핵심)
-                if (silenceTimer) clearTimeout(silenceTimer);
-
-                if (final) {
-                    processConfirmedText(final);
-                    lastInterim = '';
-                } else if (interim) {
-                    lastInterim = interim;
-                    subtitleEl.textContent = interim;
-                    subtitleEl.className = 'subtitle-text interim';
-
-                    // [핵심] 원거리 발화의 경우 호흡이 길거나 명확하지 않을 수 있으므로
-                    // 1.5초간 변화가 없으면 번역 수행 (판정 여유 증대)
-                    silenceTimer = setTimeout(() => {
-                        if (lastInterim) {
-                            console.log("Silence detected. Auto-finalizing...");
-                            processConfirmedText(lastInterim);
-                            lastInterim = '';
-                        }
-                    }, 1500); // 0.8s -> 1.5s
-                }
-            };
-
-            async function processConfirmedText(text) {
-                const cleanText = text.trim();
-                if (!cleanText || cleanText.length < 1) return;
-
-                const subtitleEl = document.getElementById('subtitleText');
-                const targetLang = document.getElementById('translateLang').value;
-
-                // 1. 카메라 자막엔 무조건 인식 언어(원본) 표시
-                subtitleEl.textContent = cleanText;
-                subtitleEl.className = 'subtitle-text final';
-
-                // --- TRIAL LIMIT CHECK --- 
-                if (!isPremium && !isAdmin) {
-                    if (!trialStartTime) trialStartTime = Date.now();
-                    const elapsed = Date.now() - trialStartTime;
-                    if (elapsed > MAX_TRIAL_MS) { stopAll(); alert("⏳ 1시간 무료 체험 종료"); return; }
-                    trialChars += cleanText.length;
-                    if (trialChars > MAX_TRIAL_CHARS) { stopAll(); alert("📝 무료 체험 글자 수 초과"); return; }
-                }
-
-                // 2. 번역 수행 및 로그 기록
-                const sourceLang = document.getElementById('recognitionLang').value;
-                console.log(`[Translate Request] ${sourceLang} -> ${targetLang}: "${cleanText}"`);
-                
-                const translated = await translateText(cleanText, targetLang, sourceLang);
-                console.log(`[Translate Response] -> "${translated}"`);
-
-                // 원본과 번역본을 모두 로그에 기록
-                addToTranscript(cleanText, translated || "(번역 실패)", sourceLang, targetLang);
-
-                setTimeout(() => {
-                    if (subtitleEl.textContent === cleanText) {
-                        subtitleEl.className = 'subtitle-text empty';
-                        subtitleEl.textContent = 'Waiting for speech...';
-                    }
-                }, 5000);
-            }
-
-            return recognition;
-        }
-
-        async function startAll() {
-            showToast('⏳ Starting systems...');
-            await startCamera();
-            startRecognition();
-            showToast('▶️ Running');
-        }
-        function stopAll() {
-            stopRecognition();
-            stopCamera();
-            showToast('⏹️ Stopped');
-        }
-        let audioContext = null;
-        let volumeAnimation = null;
-
-        function startVolumeMeter(stream) {
-            try {
-                if (audioContext) audioContext.close();
-                audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                const analyser = audioContext.createAnalyser();
-                const source = audioContext.createMediaStreamSource(stream);
-                source.connect(analyser);
-                analyser.fftSize = 256;
-                const bufferLength = analyser.frequencyBinCount;
-                const dataArray = new Uint8Array(bufferLength);
-                const meterFill = document.getElementById('volumeMeterFill');
-
-                function draw() {
-                    if (!isRecognizing) return;
-                    volumeAnimation = requestAnimationFrame(draw);
-                    analyser.getByteFrequencyData(dataArray);
-                    let sum = 0;
-                    for (let i = 0; i < bufferLength; i++) sum += dataArray[i];
-                    let average = sum / bufferLength;
-                    let percentage = Math.min(100, (average / 60) * 100); // 감도 조절
-                    if (meterFill) meterFill.style.width = percentage + '%';
-                }
-                draw();
-            } catch (e) { console.error("Volume meter failed:", e); }
-        }
-
-        async function startRecognition() {
-            if (!recognition) recognition = initSpeechRecognition();
-            if (recognition) {
-                // [개선] 원거리 인식율 향상을 위한 마이크 및 AGC 설정 강화
-                const selectedMicId = document.getElementById('micSelect').value;
-                const constraints = {
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true // 자동 게인 조절 활성화 (원거리 음성 증폭)
-                    }
-                };
-                if (selectedMicId) {
-                    constraints.audio.deviceId = { exact: selectedMicId };
-                }
-
-                try {
-                    // 브라우저의 오디오 서브시스템에 특정 제약 조건을 가진 스트림을 활성화시켜 STT 성능 유도
-                    const micStream = await navigator.mediaDevices.getUserMedia(constraints);
-                    startVolumeMeter(micStream);
-                    // STT가 중간에 끊기지 않도록 레퍼런스 유지
-                    window.currentMicStream = micStream;
-                } catch (e) {
-                    console.warn("Could not apply advanced mic constraints:", e);
-                }
-
-                recognition.lang = document.getElementById('recognitionLang').value;
-                try {
-                    recognition.start();
-                } catch (e) {
-                    console.log("Recognition already running or failed to start.");
-                }
-            }
-        }
-
-        function stopRecognition() {
-            isRecognizing = false;
-            if (recognition) try { recognition.stop(); } catch (e) { }
-            
-            // 오디오 리소스 해제
-            if (window.currentMicStream) {
-                window.currentMicStream.getTracks().forEach(t => t.stop());
-                window.currentMicStream = null;
-            }
-            if (audioContext) {
-                audioContext.close();
-                audioContext = null;
-            }
-            if (volumeAnimation) cancelAnimationFrame(volumeAnimation);
-            
-            const s = document.getElementById('subtitleText');
-            s.className = 'subtitle-text empty';
-            s.textContent = 'Press Start button';
-            const meterFill = document.getElementById('volumeMeterFill');
-            if (meterFill) meterFill.style.width = '0%';
-        }
-
-        function addToTranscript(original, translated, source, target) {
-            const box = document.getElementById('transcriptBox');
-            const item = document.createElement('div'); item.className = 'transcript-item';
-            item.style.marginBottom = '15px';
-            item.style.padding = '12px';
-            item.style.borderLeft = '4px solid #00ff88';
-            item.style.background = 'rgba(255, 255, 255, 0.05)';
-            item.style.borderRadius = '0 8px 8px 0';
-
-            const langPair = `<span style="font-size: 0.7em; opacity: 0.5; margin-left: 8px;">(${source.split('-')[0]} ➔ ${target.split('-')[0]})</span>`;
-
-            item.innerHTML = `
-                <div class="transcript-time" style="font-size: 0.75em; opacity: 0.5; margin-bottom: 6px;">${getTimeString()} ${langPair}</div>
-                <div class="transcript-original" style="color: #00d9ff; font-size: 1.05em; margin-bottom: 5px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px;">${original}</div>
-                <div class="transcript-translated" style="color: #ffffff; font-size: 1.2em; font-weight: 500;">${translated}</div>
-            `;
-            box.appendChild(item); box.scrollTop = box.scrollHeight;
-        }
-
-        let logoClickCount = 0;
-        function handleLogoClick() {
-            logoClickCount++;
-            if (logoClickCount === 3) {
-                logoClickCount = 0;
-                if (confirm('Run translation service diagnostic? (English -> Korean)')) {
-                    testTranslation();
-                }
-            }
-            setTimeout(() => { logoClickCount = 0; }, 2000);
-        }
-
-        async function testTranslation() {
-            showToast('🧪 Testing connection...');
-            const result = await translateText("This is a diagnostic test.", "ko", "en");
-            alert(`Diagnostic Result:\nOriginal: This is a diagnostic test.\nTranslated: ${result}`);
-        }
-        function clearTranscript() { document.getElementById('transcriptBox').innerHTML = ''; showToast('🗑️ Log cleared'); }
-        function saveTranscript() {
-            const items = document.getElementById('transcriptBox').querySelectorAll('.transcript-item');
-            if (items.length === 0) { showToast('No records to save'); return; }
-            let content = '=== Conference Helper - Translation Log ===\n';
-            content += `Saved: ${new Date().toLocaleString()}\nRecognition: ${document.getElementById('recognitionLang').selectedOptions[0].text}\nTranslation: ${document.getElementById('translateLang').selectedOptions[0].text}\n==========================================\n\n`;
-            items.forEach(item => { content += `[${item.querySelector('.transcript-time').textContent}]\nOriginal: ${item.querySelector('.transcript-original').textContent}\nTranslated: ${item.querySelector('.transcript-translated').textContent}\n\n`; });
-            const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type: 'text/plain;charset=utf-8' })); a.download = `conference_log_${getDateTimeString()}.txt`;
-            document.body.appendChild(a); a.click(); document.body.removeChild(a);
-            showToast('💾 Log saved');
-        }
-
-        document.getElementById('recognitionLang').addEventListener('change', () => { if (isRecognizing && recognition) { recognition.stop(); recognition = null; setTimeout(() => { recognition = initSpeechRecognition(); if (recognition) recognition.start(); showToast('🌐 Language changed'); }, 200); } });
-        document.getElementById('cameraFacing').addEventListener('change', async () => { if (videoStream) { stopCamera(); await startCamera(); } });
-        document.getElementById('imageModal').addEventListener('click', (e) => { if (e.target.id === 'imageModal') closeModal(); });
-        document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
-        window.onbeforeunload = stopAll;
-        if ('serviceWorker' in navigator && !location.hostname.includes('claudeusercontent')) navigator.serviceWorker.register('sw.js').catch(e => { });
-    </script>
+    <script src="./config.js"></script>
+    <script type="module" src="./app.js"></script>
 </body>
-
 </html>

@@ -1,127 +1,139 @@
-# 🎓 Conference Helper (학회 도우미)
+# Conference Copilot
 
-**Real-time Speech Recognition & Translation for International Conferences**
+국제 학회·기술 회의·발표를 위한 실시간 동시통역 웹앱입니다. 브라우저에서 음성을 WebRTC로 전송해 번역 음성과 원문/번역 자막을 동시에 받고, 누적된 기록을 구조화된 회의록 또는 발표 요약으로 변환합니다.
 
-국제 학회에서 실시간 음성 인식과 번역을 제공하는 웹앱입니다.
+## 주요 기능
 
-## 🌐 Live Demo
+| 영역 | 기능 |
+|---|---|
+| 실시간 통역 | gpt-realtime-translate 기반 스트리밍 음성→음성 통역 |
+| 원문 전사 | gpt-realtime-whisper 원문 자막 동시 생성 |
+| 입력 | 마이크 또는 브라우저 탭 오디오 |
+| 호환 모드 | Realtime 연결 실패 시 브라우저 STT + 문맥 기반 AI 번역 |
+| 회의록 | 핵심 요약, 결정사항, 액션 아이템, 담당자·일정, 미해결 질문 |
+| 발표 요약 | 발표 흐름, 핵심 주장, 근거·결과·한계, 질문 정리 |
+| 기록 관리 | 브라우저 자동 저장, 세션 복원, Markdown 내보내기 |
+| PWA | 모바일 설치, 네트워크 우선 캐시, 오프라인 앱 셸 |
 
-**[👉 https://waterfirst.github.io/International-conference-helper/](https://waterfirst.github.io/International-conference-helper/)**
+## 아키텍처
 
-## ✨ Features
+~~~mermaid
+flowchart LR
+    A["마이크 / 탭 음원"] --> B["Browser WebRTC"]
+    B --> C["Realtime Translation"]
+    C --> D["번역 음성 + 자막"]
+    C --> E["원문 + 번역 기록"]
+    E --> F["Responses API"]
+    F --> G["회의록 / 발표 요약"]
+~~~
 
-| Feature | Description |
-|---------|-------------|
-| 🎤 **Speech Recognition** | Real-time speech-to-text in multiple languages |
-| 🌍 **Translation** | Automatic translation to your preferred language |
-| 📺 **Live Subtitles** | Display subtitles over camera view |
-| 📷 **Camera Support** | Front/back camera with toggle option |
-| 💾 **Save Records** | Export translation log as text file |
-| 📱 **PWA Support** | Install as app on mobile devices |
+- 표준 OpenAI API 키는 백엔드에만 저장합니다.
+- 브라우저는 백엔드에서 발급한 짧은 수명의 Realtime 클라이언트 비밀키만 사용합니다.
+- 전사·번역 기록은 기본적으로 브라우저 localStorage에만 저장됩니다.
+- Realtime이 불가능한 브라우저에서는 Web Speech API와 서버 번역 경로를 사용합니다.
 
-## 🗣️ Supported Languages
+## 기술 스택
 
-### Recognition Languages
-- 🇺🇸 English
-- 🇰🇷 한국어 (Korean)
-- 🇯🇵 日本語 (Japanese)
-- 🇨🇳 中文 (Chinese)
-- 🇩🇪 Deutsch (German)
-- 🇫🇷 Français (French)
-- 🇪🇸 Español (Spanish)
+- Frontend: HTML5, CSS, JavaScript ES Modules, WebRTC, MediaDevices, Firebase Auth, PWA
+- Backend: Node.js 20, Express, Firebase Admin, Firestore, OpenAI Realtime/Responses API
+- Fallback: Google Cloud Translation v3
+- Deployment: GitHub Pages + Google Cloud Run
 
-### Translation Languages
-- All of the above
+## 빠른 시작
 
-## 📱 How to Use
+### 1. 백엔드
 
-### On Mobile (Recommended)
+~~~bash
+cd backend
+cp .env.example .env
+npm ci
+npm start
+~~~
 
-1. Open the link in **Chrome** or **Edge** browser
-2. Tap **"Add to Home Screen"** for app-like experience
-3. Select recognition language (speaker's language)
-4. Select translation language (your language)
-5. Toggle camera on/off as needed
-6. Tap **Start** and point at the speaker
-7. See real-time subtitles and translations!
+backend/.env에서 최소한 다음 값을 설정합니다.
 
-### On Desktop
+~~~dotenv
+OPENAI_API_KEY=sk-...
+PROJECT_ID=your-google-cloud-project
+FIRESTORE_DATABASE_ID=user
+GOOGLE_APPLICATION_CREDENTIALS=./service-account.json
+ALLOWED_ORIGINS=http://127.0.0.1:5500
+~~~
 
-1. Open the link in Chrome or Edge
-2. Allow microphone (and camera if needed) permissions
-3. Configure languages and start
+service-account.json과 .env는 Git에서 제외됩니다.
 
-## 🎯 Use Cases
+### 2. 프런트엔드
 
-- **International Conferences**: Understand presentations in foreign languages
-- **Academic Seminars**: Follow along with translated subtitles
-- **Business Meetings**: Real-time translation for multilingual teams
-- **Language Learning**: Practice listening with subtitle support
+config.js의 backendUrl과 Firebase 공개 웹 설정을 배포 환경에 맞게 수정합니다.
 
-## ⚙️ Technical Architecture (SaaS Upgrade)
+~~~bash
+python3 -m http.server 5500
+~~~
 
-This project has been upgraded from a client-side only app to a secure **SaaS (Software-as-a-Service)** architecture.
+브라우저에서 http://127.0.0.1:5500을 열고 Firebase Authentication의 승인된 도메인에 127.0.0.1 또는 localhost를 추가합니다.
 
-*   **Frontend**: Plain HTML/JS + Firebase Auth (Google Login)
-*   **Backend**: Node.js + Express on Google Cloud Run
-*   **Database**: Firestore (User License & Quota Management)
-*   **Translation**: Server-side Google Cloud Translation API (Secure Key Handling)
+### 3. 테스트
 
-## 🚀 Deployment Guide (SaaS Version)
+~~~bash
+cd backend
+npm test
+node --check index.js
+node --check ../app.js
+~~~
 
-This guide explains how to deploy your own secure backend using **Google Cloud Shell** (No local installation required).
+## 사용 방법
 
-### Prerequisites
-1.  Create a project in [Google Cloud Console](https://console.cloud.google.com/).
-2.  Create a project in [Firebase Console](https://console.firebase.google.com/) and link it to your Google Cloud project.
-3.  Enable **Cloud Translation API** in Google Cloud Console.
+1. Google 계정으로 로그인합니다.
+2. 회의 또는 발표 모드와 입출력 언어를 선택합니다.
+3. 마이크 또는 브라우저 탭 음원을 선택합니다.
+4. 기술 약어·인명·제품명은 전문용어 사전에 입력합니다.
+5. **동시통역 시작**을 누릅니다.
+6. 세션 종료 후 **AI 회의록 생성** 또는 **AI 발표 요약**을 실행합니다.
+7. 전체 기록과 요약을 Markdown으로 저장합니다.
 
-### Step-by-Step Deployment
+## 품질 운영 권장사항
 
-**1. Prepare & Upload Code**
-*   Compress your local `backend` folder into a zip file named **`backend.zip`**.
-*   Open the [Google Cloud Console](https://console.cloud.google.com/).
-*   Click the **Activate Cloud Shell** icon (`>_`) in the top right.
-*   Click the **More** button (⋮) in the Cloud Shell terminal -> **Upload** -> Select `backend.zip`.
+- 발표자별 오디오 트랙을 분리할 수 있으면 분리합니다.
+- 사람 이름, 숫자, 날짜, 단위, 약어가 포함된 실제 음성으로 사전 평가 세트를 만듭니다.
+- 통역 품질과 지연 시간을 별도 지표로 측정합니다.
+- 브라우저 탭 입력에서는 반드시 **탭 오디오 공유**를 선택합니다.
+- 동일 언어가 입력될 때 번역 음성이 나오지 않을 수 있으므로 원음 청취 경로를 유지합니다.
 
-**2. Deploy via Cloud Shell**
-Copy and paste the following commands into the Cloud Shell terminal (**one by one**):
+## 보안 개선
 
-```bash
-# 1. Clean up and setup directory
-cd ~ && rm -rf backend && mkdir backend && cd backend
+- 인증 우회 토큰과 코드 내 관리자 이메일 제거
+- Toss Payments 서버 비밀키 기본값 제거
+- 결제 확인 요청에 Firebase 인증과 금액·주문 일치 검증 추가
+- 허용 도메인 기반 CORS, 요청 크기 제한, 사용자별 속도 제한 적용
+- 음성 전사 텍스트를 innerHTML로 삽입하지 않아 XSS 차단
+- 오래된 배포 ZIP 제거 및 서비스워커 캐시 갱신
+- API 오류 세부정보가 사용자에게 직접 노출되지 않도록 표준화
 
-# 2. Unzip the code (if you uploaded zip) OR Create files directly (Recommended)
-# Method A: If you uploaded backend.zip
-unzip ../backend.zip -d .
+## 환경 변수
 
-# Method B: Direct Creation (Fail-safe method)
-# (Copy the package.json and index.js creation commands provided in the full tutorial)
-```
+전체 목록은 [backend/.env.example](backend/.env.example)을 참고하세요.
 
-**3. Run the Deploy Command**
-```bash
-# Deploys to Seoul region (asia-northeast3)
-gcloud run deploy translator-backend --source . --region asia-northeast3 --allow-unauthenticated
-```
-*   Wait about 2-3 minutes.
-*   Copy the resulting **Service URL** (e.g., `https://translator-backend-xyz.run.app`).
+| 변수 | 기본값 | 설명 |
+|---|---|---|
+| OPENAI_API_KEY | 없음 | Realtime 및 Responses API 키 |
+| REALTIME_TRANSLATION_MODEL | gpt-realtime-translate | 실시간 통역 모델 |
+| REALTIME_TRANSCRIPTION_MODEL | gpt-realtime-whisper | 원문 전사 모델 |
+| TEXT_TRANSLATION_MODEL | gpt-5.6-luna | 호환 모드 번역 모델 |
+| SUMMARY_MODEL | gpt-5.6-terra | 회의록·발표 요약 모델 |
+| FIRESTORE_DATABASE_ID | user | Firestore 데이터베이스 ID |
+| ADMIN_EMAILS | 없음 | 쉼표로 구분한 관리자 이메일 |
+| ALLOWED_ORIGINS | GitHub Pages·로컬 | 허용 웹 Origin 목록 |
+| TOSS_SECRET_KEY | 없음 | 결제 확인용 서버 비밀키 |
 
-**4. Connect Frontend**
-*   Open `index3.html`.
-*   Update `const BACKEND_URL` with your new Service URL.
-*   Update `firebaseConfig` with your Firebase project keys.
+## 공식 기술 문서
 
-## � Security & Privacy
+- [OpenAI Realtime translation](https://developers.openai.com/api/docs/guides/realtime-translation)
+- [OpenAI transcription](https://developers.openai.com/api/docs/guides/transcription)
+- [OpenAI Responses API text generation](https://developers.openai.com/api/docs/guides/text)
+- [OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs)
 
-*   **Authentication**: Users must log in with Google to access translation.
-*   **License Check**: The backend verifies if the user has a valid license/quota in Firestore before translating.
-*   **Data Protection**: API Keys are hidden on the server and never exposed to the client.
+상세 배포 절차는 [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)를 참고하세요.
 
-## 📄 License
+## License
 
-MIT License
-
----
-
-**Made with ❤️ for the global academic community**
+MIT

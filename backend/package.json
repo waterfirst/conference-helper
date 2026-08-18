@@ -1,11 +1,15 @@
 {
   "name": "translator-backend",
   "version": "1.0.0",
-  "description": "Backend for Real-time Translator with SaaS features",
+  "description": "Secure API for realtime conference interpretation and AI meeting notes",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "dev": "node index.js"
+    "dev": "node --watch index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
   },
   "dependencies": {
     "@google-cloud/translate": "^8.0.2",

@@ -6,3 +6,4 @@ service-account.json
 backend/service-account.json
 *.log
 .DS_Store
+*.zip
